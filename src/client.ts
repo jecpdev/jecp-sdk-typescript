@@ -2,7 +2,7 @@
  * JECP Agent client — invoke capabilities, manage wallet, discover catalog.
  *
  * Usage:
- *   import { JecpClient } from '@jecp/sdk';
+ *   import { JecpClient } from '@jecpdev/sdk';
  *   const jecp = new JecpClient({ agentId, apiKey });
  *   const result = await jecp.invoke('jobdonebot/content-factory', 'translate', {
  *     text: 'Hello', target_lang: 'JA'

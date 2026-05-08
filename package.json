@@ -1,5 +1,5 @@
 {
-  "name": "@jecp/sdk",
+  "name": "@jecpdev/sdk",
   "version": "0.1.0",
   "description": "Official TypeScript SDK for JECP — Joint Execution & Commerce Protocol. Build agents that hold wallets and pay per call. Or sell your service to AI agents.",
   "type": "module",

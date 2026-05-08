@@ -1,14 +1,14 @@
-# @jecp/sdk
+# @jecpdev/sdk
 
 > Official TypeScript SDK for **JECP — Joint Execution & Commerce Protocol**.
 > The open protocol for agent-to-service commerce.
 
-[![npm](https://img.shields.io/npm/v/@jecp/sdk.svg)](https://npmjs.com/package/@jecp/sdk)
+[![npm](https://img.shields.io/npm/v/@jecpdev/sdk.svg)](https://npmjs.com/package/@jecpdev/sdk)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Spec](https://img.shields.io/badge/spec-v1.0--draft-blue.svg)](https://github.com/jecpdev/jecp-spec)
 
 ```bash
-npm install @jecp/sdk
+npm install @jecpdev/sdk
 ```
 
 JECP serves two opposite intents through one protocol:
@@ -23,7 +23,7 @@ Both share the same SDK.
 ## Quick start: your agent invokes a capability
 
 ```typescript
-import { JecpClient, InsufficientBalanceError } from '@jecp/sdk';
+import { JecpClient, InsufficientBalanceError } from '@jecpdev/sdk';
 
 const jecp = new JecpClient({
   agentId: process.env.AGENT_ID!,   // jdb_ag_*
@@ -56,7 +56,7 @@ try {
 ## Quick start: register a new agent
 
 ```typescript
-import { JecpClient } from '@jecp/sdk';
+import { JecpClient } from '@jecpdev/sdk';
 
 const { agent_id, api_key, free_calls_remaining } = await JecpClient.register({
   name: 'MyResearchAgent',
@@ -86,7 +86,7 @@ const { url } = await jecp.topup(20);
 If you're a service provider receiving JECP invocations:
 
 ```typescript
-import { JecpProvider } from '@jecp/sdk';
+import { JecpProvider } from '@jecpdev/sdk';
 
 const provider = new JecpProvider({
   hmacSecret: process.env.JECP_HMAC_SECRET!, // from /v1/providers/register

@@ -1,5 +1,5 @@
 /**
- * @jecp/sdk — Official TypeScript SDK for JECP
+ * @jecpdev/sdk — Official TypeScript SDK for JECP
  * Joint Execution & Commerce Protocol — https://jecp.dev
  */
 

@@ -2,7 +2,7 @@
  * JECP Provider helper — verify HMAC signatures and create endpoint handlers.
  *
  * Usage (Express / Next.js / Hono / Bun.serve):
- *   import { JecpProvider } from '@jecp/sdk';
+ *   import { JecpProvider } from '@jecpdev/sdk';
  *
  *   const provider = new JecpProvider({
  *     hmacSecret: process.env.JECP_HMAC_SECRET!,
