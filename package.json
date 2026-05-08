@@ -1,0 +1,58 @@
+{
+  "name": "@jecp/sdk",
+  "version": "0.1.0",
+  "description": "Official TypeScript SDK for JECP — Joint Execution & Commerce Protocol. Build agents that hold wallets and pay per call. Or sell your service to AI agents.",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": ["dist", "README.md", "LICENSE"],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsup src/index.ts --format cjs,esm --dts --clean",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "tsc --noEmit",
+    "prepublishOnly": "npm run build && npm test"
+  },
+  "keywords": [
+    "jecp",
+    "agent-commerce-protocol",
+    "ai-agent",
+    "agent-payment",
+    "b2a",
+    "agent-wallet",
+    "llm",
+    "anthropic",
+    "openai",
+    "stripe-agent"
+  ],
+  "author": "Tufe Company Inc. <hello@jecp.dev>",
+  "license": "Apache-2.0",
+  "homepage": "https://jecp.dev",
+  "bugs": {
+    "url": "https://github.com/jecpdev/jecp-sdk-typescript/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jecpdev/jecp-sdk-typescript.git"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "tsup": "^8.0.0",
+    "typescript": "^5.4.0",
+    "vitest": "^1.6.0"
+  }
+}
