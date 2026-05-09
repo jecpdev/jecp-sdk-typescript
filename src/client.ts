@@ -81,6 +81,85 @@ export class JecpClient {
   }
 
   /**
+   * Invoke a streaming JECP capability (W5). Returns AsyncIterable of stream events.
+   *
+   * @example
+   *   const stream = jecp.invokeStream('llm/chat', 'complete', { prompt: '...' });
+   *   for await (const ev of stream) {
+   *     if (ev.type === 'chunk') process.stdout.write(ev.delta);
+   *     if (ev.type === 'completed') console.log('billing:', ev.billing);
+   *   }
+   */
+  invokeStream(
+    capability: string,
+    action: string,
+    input: unknown,
+    options: import('./streaming.js').InvokeStreamOptions = {},
+  ): import('./streaming.js').JecpStream {
+    const request_id = options.requestId ?? randomId();
+    const body = {
+      jecp: '1.0' as const,
+      id: request_id,
+      capability,
+      action,
+      input,
+      ...(options.mandate && {
+        mandate: this.normalizeMandate(options.mandate),
+      }),
+      streaming: true,
+    };
+    const url = `${this.baseUrl}/v1/invoke`;
+
+    // Build request — using fetch directly because SSE responses must not be
+    // auto-buffered and the retry/timeout layer doesn't fit here cleanly.
+    const fetchPromise = this.fetchImpl(url, {
+      method: 'POST',
+      headers: {
+        'X-Agent-ID': this.agentId,
+        'X-API-Key': this.apiKey,
+        'Content-Type': 'application/json',
+        'Accept': 'text/event-stream',
+      },
+      body: JSON.stringify(body),
+      signal: options.signal,
+    });
+
+    // We need a ReadableStream — wrap the awaited Response.body in an iterator that
+    // also waits for the fetch to finish on first read.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const proxyStream: ReadableStream<Uint8Array> = new ReadableStream({
+      async start(controller) {
+        try {
+          const res = await fetchPromise;
+          if (!res.ok) {
+            const text = await res.text();
+            controller.error(new Error(`stream HTTP ${res.status}: ${text.slice(0, 200)}`));
+            return;
+          }
+          if (!res.body) {
+            controller.error(new Error('stream response has no body'));
+            return;
+          }
+          const reader = res.body.getReader();
+          while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            controller.enqueue(value);
+          }
+          controller.close();
+        } catch (e) {
+          controller.error(e);
+        }
+      },
+    });
+
+    // Lazy import to avoid circular dep at module init
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { JecpStream } = require('./streaming.js') as typeof import('./streaming.js');
+    return new JecpStream(proxyStream, options.signal);
+  }
+
+  /**
    * Invoke a JECP capability. Auto-retries transient failures (5xx, 408, 429, network).
    * Throws a typed JecpError on terminal failure with `.nextAction` for recovery.
    *

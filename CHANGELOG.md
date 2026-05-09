@@ -5,6 +5,31 @@ All notable changes to `@jecpdev/sdk` are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-05-09
+
+Streaming responses (W5).
+
+### Added
+- `JecpStream` — AsyncIterable for SSE event streams. Yields parsed
+  `chunk` / `meter` / `completed` / `error` / `cancelled` events.
+- `JecpClient.invokeStream(capability, action, input, options?)` —
+  initiates a streaming invocation. Returns `JecpStream`.
+- `JecpStream.toArray()` — drain all events into an array.
+- `JecpStream.toText()` — concatenate `chunk` deltas as text (LLM-friendly).
+- `JecpStream.final()` — wait for terminal event, return billing/result.
+- AbortSignal propagation through stream — abort closes upstream cleanly.
+- 8 new tests (66 total) covering parsing, terminal events, abort.
+
+### Spec
+- See `jobdonebot:docs/jecp/world-no1-roadmap/05-streaming-deep-design.md`
+  for full protocol details (backpressure, cancellation, pricing models,
+  idempotency, mid-stream Mandate enforcement).
+
+### Notes
+- Hub-side SSE pass-through implementation pending — invokeStream() will
+  return a meaningful response once Hub W5 lands. SDK is forward-compatible
+  with future Hub releases.
+
 ## [0.3.0] - 2026-05-09
 
 Refunds + Webhook subscriptions (matches Hub W2 + W4).

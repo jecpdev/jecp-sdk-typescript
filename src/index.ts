@@ -35,6 +35,9 @@ export {
 } from './webhook.js';
 export type { WebhookEvent, VerifyWebhookOptions } from './webhook.js';
 
+export { JecpStream } from './streaming.js';
+export type { StreamEvent, InvokeStreamOptions } from './streaming.js';
+
 export {
   DEFAULT_RETRY,
   isRetriableError,

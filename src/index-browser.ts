@@ -44,6 +44,9 @@ export {
 } from './retry.js';
 export type { RetryConfig } from './retry.js';
 
+export { JecpStream } from './streaming.js';
+export type { StreamEvent, InvokeStreamOptions } from './streaming.js';
+
 export {
   noopLogger,
   consoleLogger,
