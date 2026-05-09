@@ -216,6 +216,148 @@ export class JecpClient {
     return data;
   }
 
+  // ─── Refunds (W2) ──────────────────────────────────────────
+
+  /**
+   * Request a refund for a charge transaction (Spec §3.4 — within 30 days of the charge).
+   *
+   * @example
+   *   const r = await jecp.requestRefund({
+   *     transaction_id: 'tx-abc',
+   *     reason: 'Provider returned wrong language',
+   *   });
+   */
+  async requestRefund(
+    body: { transaction_id: string; reason: string; evidence_url?: string },
+    options: { signal?: AbortSignal; timeoutMs?: number } = {},
+  ): Promise<{
+    refund_id: string;
+    status: string;
+    transaction_id: string;
+    amount_usdc: number;
+    estimated_resolution?: string;
+  }> {
+    const { data } = await this.requestWithRetry<{
+      refund_id: string;
+      status: string;
+      transaction_id: string;
+      amount_usdc: number;
+      estimated_resolution?: string;
+    }>({
+      method: 'POST',
+      path: '/v1/refunds',
+      body,
+      authed: true,
+      signal: options.signal,
+      timeoutMs: options.timeoutMs,
+    });
+    return data;
+  }
+
+  /** Get a refund by id (must be the requesting agent or the resolving provider). */
+  async getRefund(refundId: string, options: { signal?: AbortSignal; timeoutMs?: number } = {}): Promise<unknown> {
+    const { data } = await this.requestWithRetry<unknown>({
+      method: 'GET',
+      path: `/v1/refunds/${encodeURIComponent(refundId)}`,
+      authed: true,
+      signal: options.signal,
+      timeoutMs: options.timeoutMs,
+    });
+    return data;
+  }
+
+  /** List your own refund requests (agent side). */
+  async listRefunds(options: { limit?: number; signal?: AbortSignal; timeoutMs?: number } = {}): Promise<{
+    refunds: unknown[];
+    count: number;
+  }> {
+    const qs = options.limit !== undefined ? `?limit=${options.limit}` : '';
+    const { data } = await this.requestWithRetry<{ refunds: unknown[]; count: number }>({
+      method: 'GET',
+      path: `/v1/refunds${qs}`,
+      authed: true,
+      signal: options.signal,
+      timeoutMs: options.timeoutMs,
+    });
+    return data;
+  }
+
+  // ─── Webhook subscriptions (W4) ────────────────────────────
+
+  /**
+   * Subscribe to async events. Returns the subscription with `hmac_secret` (shown once).
+   * Save the secret immediately — use it with `verifyWebhook` to validate inbound events.
+   *
+   * @example
+   *   const sub = await jecp.subscribe({
+   *     endpoint_url: 'https://myapp.com/jecp/webhook',
+   *     events: ['invocation.completed', 'wallet.low_balance'],
+   *   });
+   *   // Save sub.hmac_secret somewhere safe.
+   */
+  async subscribe(
+    body: { endpoint_url: string; events?: string[] },
+    options: { signal?: AbortSignal; timeoutMs?: number } = {},
+  ): Promise<{
+    subscription_id: string;
+    endpoint_url: string;
+    events: string[];
+    status: string;
+    hmac_secret: string;
+    created_at: string;
+  }> {
+    const { data } = await this.requestWithRetry<{
+      subscription_id: string;
+      endpoint_url: string;
+      events: string[];
+      status: string;
+      hmac_secret: string;
+      created_at: string;
+    }>({
+      method: 'POST',
+      path: '/v1/subscriptions',
+      body,
+      authed: true,
+      signal: options.signal,
+      timeoutMs: options.timeoutMs,
+    });
+    return data;
+  }
+
+  /** List your active webhook subscriptions. */
+  async listSubscriptions(options: { signal?: AbortSignal; timeoutMs?: number } = {}): Promise<{
+    subscriptions: unknown[];
+    count: number;
+  }> {
+    const { data } = await this.requestWithRetry<{ subscriptions: unknown[]; count: number }>({
+      method: 'GET',
+      path: '/v1/subscriptions',
+      authed: true,
+      signal: options.signal,
+      timeoutMs: options.timeoutMs,
+    });
+    return data;
+  }
+
+  /** Send a synthetic test event to verify your webhook endpoint. */
+  async testSubscription(
+    subscriptionId: string,
+    options: { signal?: AbortSignal; timeoutMs?: number } = {},
+  ): Promise<{ subscription_id: string; event_id: string; enqueued: boolean }> {
+    const { data } = await this.requestWithRetry<{
+      subscription_id: string;
+      event_id: string;
+      enqueued: boolean;
+    }>({
+      method: 'POST',
+      path: `/v1/subscriptions/${encodeURIComponent(subscriptionId)}/test`,
+      authed: true,
+      signal: options.signal,
+      timeoutMs: options.timeoutMs,
+    });
+    return data;
+  }
+
   /**
    * Get a personalized share kit for spreading JECP to other agents/developers.
    */

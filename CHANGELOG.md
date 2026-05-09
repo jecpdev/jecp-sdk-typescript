@@ -5,6 +5,28 @@ All notable changes to `@jecpdev/sdk` are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-05-09
+
+Refunds + Webhook subscriptions (matches Hub W2 + W4).
+
+### Added
+- `requestRefund({ transaction_id, reason, evidence_url? })` — request a refund within
+  30 days of the original charge. Returns refund_id + estimated_resolution time.
+- `getRefund(refundId)` — read a refund's current state.
+- `listRefunds({ limit? })` — list your own refund requests (agent side).
+- `subscribe({ endpoint_url, events? })` — subscribe to async webhook events. Returns
+  the subscription with `hmac_secret` (shown once — pair with `verifyWebhook()`).
+- `listSubscriptions()` — list active webhook subscriptions.
+- `testSubscription(id)` — fire a synthetic test event to verify your endpoint.
+
+### Notes
+- Refund auto-approves after 24h if Provider doesn't respond. 90% returns to agent
+  (Hub keeps its 10% fee even on refund — processing cost). Provider's 85% share
+  is debited from `pending` revenue split.
+- Webhook events are HMAC-SHA256 signed. Verify with `verifyWebhook()` (already in v0.2).
+- v1 event types: `invocation.completed`, `invocation.refunded`, `wallet.low_balance`,
+  `provider.kyc_status_changed`, `test.synthetic`.
+
 ## [0.2.0] - 2026-05-09
 
 Resilience, observability, and edge-runtime support.
