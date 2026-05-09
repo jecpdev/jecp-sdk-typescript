@@ -425,3 +425,76 @@ describe('JecpClient — logger', () => {
     expect(errors[0]).toMatch(/failed/);
   });
 });
+
+describe('JecpClient — catalog pagination (W3)', () => {
+  it('catalog() passes pageSize / namespace / tags as query params', async () => {
+    let capturedUrl = '';
+    const fakeFetch = async (url: string, _init?: RequestInit) => {
+      capturedUrl = url;
+      return new Response(
+        JSON.stringify({ jecp: '1.0', engine: 'jecp', capabilities: [], next_cursor: null, has_more: false }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      );
+    };
+    const c = new JecpClient({
+      agentId: 'a', apiKey: 'b',
+      fetch: fakeFetch as unknown as typeof fetch,
+    });
+    await c.catalog({ pageSize: 100, namespace: 'jobdonebot', tags: ['image', 'pdf'] });
+    expect(capturedUrl).toContain('page_size=100');
+    expect(capturedUrl).toContain('namespace=jobdonebot');
+    expect(capturedUrl).toContain('tags=image%2Cpdf');
+  });
+
+  it('catalogPages() iterates until no more pages', async () => {
+    let calls = 0;
+    const fakeFetch = async (_url: string) => {
+      calls++;
+      if (calls === 1) {
+        return new Response(JSON.stringify({
+          jecp: '1.0', engine: 'jecp', capabilities: [],
+          third_party_capabilities: [{ id: 'a/b' }],
+          next_cursor: 'CURSOR_A', has_more: true, page_size: 1,
+        }), { status: 200 });
+      }
+      if (calls === 2) {
+        return new Response(JSON.stringify({
+          jecp: '1.0', engine: 'jecp', capabilities: [],
+          third_party_capabilities: [{ id: 'c/d' }],
+          next_cursor: 'CURSOR_B', has_more: true, page_size: 1,
+        }), { status: 200 });
+      }
+      return new Response(JSON.stringify({
+        jecp: '1.0', engine: 'jecp', capabilities: [],
+        third_party_capabilities: [{ id: 'e/f' }],
+        next_cursor: null, has_more: false, page_size: 1,
+      }), { status: 200 });
+    };
+    const c = new JecpClient({
+      agentId: 'a', apiKey: 'b',
+      fetch: fakeFetch as unknown as typeof fetch,
+    });
+    const ids: string[] = [];
+    for await (const page of c.catalogPages({ pageSize: 1 })) {
+      for (const cap of (page.third_party_capabilities ?? []) as { id: string }[]) {
+        ids.push(cap.id);
+      }
+    }
+    expect(ids).toEqual(['a/b', 'c/d', 'e/f']);
+    expect(calls).toBe(3);
+  });
+
+  it('catalogAll() uses paginated=false', async () => {
+    let capturedUrl = '';
+    const fakeFetch = async (url: string) => {
+      capturedUrl = url;
+      return new Response(JSON.stringify({ jecp: '1.0', engine: 'jecp', capabilities: [] }), { status: 200 });
+    };
+    const c = new JecpClient({
+      agentId: 'a', apiKey: 'b',
+      fetch: fakeFetch as unknown as typeof fetch,
+    });
+    await c.catalogAll();
+    expect(capturedUrl).toContain('paginated=false');
+  });
+});

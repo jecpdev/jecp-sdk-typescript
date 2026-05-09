@@ -54,6 +54,7 @@ export type {
   BillingSummary,
   CapabilityCatalogItem,
   CatalogResponse,
+  CatalogQueryOptions,
   InvokeOptions,
   InvokeRequest,
   InvokeSuccess,

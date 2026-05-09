@@ -15,6 +15,7 @@ import type {
   AgentRegisterRequest,
   AgentRegisterResponse,
   CatalogResponse,
+  CatalogQueryOptions,
   InvokeOptions,
   InvokeSuccess,
   JecpClientOptions,
@@ -129,17 +130,68 @@ export class JecpClient {
   }
 
   /**
-   * List all live capabilities (core + third-party). Public, no auth.
+   * List capabilities (W3 — cursor-paginated by default since 2026-05-09).
+   *
+   * For all-in-one fetch (legacy / simple cases), use `.catalogAll()`.
+   * For iteration over pages, use `.catalogPages()` async iterator.
+   *
+   * @example
+   *   const page1 = await jecp.catalog({ pageSize: 50 });
+   *   if (page1.has_more) {
+   *     const page2 = await jecp.catalog({ cursor: page1.next_cursor!, pageSize: 50 });
+   *   }
    */
-  async catalog(options: { signal?: AbortSignal; timeoutMs?: number } = {}): Promise<CatalogResponse> {
+  async catalog(options: CatalogQueryOptions = {}): Promise<CatalogResponse> {
+    const params = new URLSearchParams();
+    if (options.cursor) params.set('cursor', options.cursor);
+    if (options.pageSize !== undefined) params.set('page_size', String(options.pageSize));
+    if (options.namespace) params.set('namespace', options.namespace);
+    if (options.tags && options.tags.length > 0) params.set('tags', options.tags.join(','));
+    const qs = params.toString();
+    const path = qs ? `/v1/capabilities?${qs}` : '/v1/capabilities';
     const { data } = await this.requestWithRetry<CatalogResponse>({
       method: 'GET',
-      path: '/v1/capabilities',
+      path,
       authed: false,
       signal: options.signal,
       timeoutMs: options.timeoutMs,
     });
     return data;
+  }
+
+  /**
+   * Fetch the entire catalog at once via legacy mode (`?paginated=false`).
+   * Returns up to 200 items in a single response. Use `.catalogPages()` for true pagination.
+   */
+  async catalogAll(options: { signal?: AbortSignal; timeoutMs?: number } = {}): Promise<CatalogResponse> {
+    const { data } = await this.requestWithRetry<CatalogResponse>({
+      method: 'GET',
+      path: '/v1/capabilities?paginated=false',
+      authed: false,
+      signal: options.signal,
+      timeoutMs: options.timeoutMs,
+    });
+    return data;
+  }
+
+  /**
+   * Async iterator over catalog pages. Continues until `next_cursor` is null.
+   *
+   * @example
+   *   for await (const page of jecp.catalogPages({ pageSize: 100 })) {
+   *     for (const cap of page.third_party_capabilities ?? []) {
+   *       console.log(cap.id);
+   *     }
+   *   }
+   */
+  async *catalogPages(options: Omit<CatalogQueryOptions, 'cursor'> = {}): AsyncIterableIterator<CatalogResponse> {
+    let cursor: string | undefined;
+    while (true) {
+      const page = await this.catalog({ ...options, ...(cursor && { cursor }) });
+      yield page;
+      if (!page.has_more || !page.next_cursor) break;
+      cursor = page.next_cursor;
+    }
   }
 
   /**

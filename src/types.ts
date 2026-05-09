@@ -119,6 +119,29 @@ export interface CatalogResponse {
   capabilities: unknown[];
   third_party_capabilities?: CapabilityCatalogItem[];
   third_party_count?: number;
+  /** Cursor for the next page (W3). null/undefined when there are no more pages. */
+  next_cursor?: string | null;
+  /** True if more pages exist (W3). */
+  has_more?: boolean;
+  /** Page size used for this response (W3). */
+  page_size?: number;
+  /** True if the server returned this in paginated mode (W3). */
+  paginated?: boolean;
+}
+
+export interface CatalogQueryOptions {
+  /** Cursor from a prior page's `next_cursor`. */
+  cursor?: string;
+  /** Items per page, server clamps to [1, 200]. Default 50. */
+  pageSize?: number;
+  /** Optional namespace filter (e.g. 'jobdonebot'). */
+  namespace?: string;
+  /** Optional tag filter (must match at least one). */
+  tags?: string[];
+  /** AbortSignal for cancellation. */
+  signal?: AbortSignal;
+  /** Override timeout for this call. */
+  timeoutMs?: number;
 }
 
 // ─── Agent registration & topup ─────────────────────────────
