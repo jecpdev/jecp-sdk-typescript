@@ -1,6 +1,6 @@
 {
   "name": "@jecpdev/sdk",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Official TypeScript SDK for JECP — Joint Execution & Commerce Protocol. Build agents that hold wallets and pay per call. Or sell your service to AI agents.",
   "type": "module",
   "main": "./dist/index.cjs",
@@ -11,14 +11,19 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "require": "./dist/index.cjs"
+    },
+    "./browser": {
+      "types": "./dist/index-browser.d.ts",
+      "import": "./dist/index-browser.js",
+      "require": "./dist/index-browser.cjs"
     }
   },
-  "files": ["dist", "README.md", "LICENSE"],
+  "files": ["dist", "README.md", "LICENSE", "CHANGELOG.md"],
   "engines": {
     "node": ">=18"
   },
   "scripts": {
-    "build": "tsup src/index.ts --format cjs,esm --dts --clean",
+    "build": "tsup src/index.ts src/index-browser.ts --format cjs,esm --dts --clean",
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "tsc --noEmit",
@@ -34,7 +39,9 @@
     "llm",
     "anthropic",
     "openai",
-    "stripe-agent"
+    "stripe-agent",
+    "agent-stack",
+    "open-protocol"
   ],
   "author": "Tufe Company Inc. <hello@jecp.dev>",
   "license": "Apache-2.0",

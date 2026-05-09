@@ -3,6 +3,9 @@
  * Spec: https://github.com/jecpdev/jecp-spec
  */
 
+import type { Logger } from './logger.js';
+import type { RetryConfig } from './retry.js';
+
 // ─── Mandate (Spec §4) ───────────────────────────────────────
 
 export interface Mandate {
@@ -77,7 +80,7 @@ export type NextAction =
 // ─── Catalog ─────────────────────────────────────────────────
 
 export interface CapabilityCatalogItem {
-  id: string;            // "namespace/capability"
+  id: string;
   namespace: string;
   name?: string;
   version: string;
@@ -113,7 +116,7 @@ export interface ManifestAction {
 export interface CatalogResponse {
   jecp: string;
   engine: string;
-  capabilities: unknown[]; // hardcoded core (variable schema)
+  capabilities: unknown[];
   third_party_capabilities?: CapabilityCatalogItem[];
   third_party_count?: number;
 }
@@ -155,15 +158,23 @@ export interface JecpClientOptions {
   apiKey: string;
   /** Defaults to https://jecp.dev */
   baseUrl?: string;
-  /** Default 30000 ms */
+  /** Default request timeout in ms (default: 30000). */
   timeoutMs?: number;
-  /** Custom fetch impl (e.g. for testing) */
+  /** Override default retry policy (auto-retry on 5xx/408/429/network errors). */
+  retryConfig?: Partial<RetryConfig>;
+  /** Optional logger for retry/timeout/error visibility. Default: no-op. */
+  logger?: Logger;
+  /** Custom fetch impl (e.g. for testing). */
   fetch?: typeof fetch;
 }
 
 export interface InvokeOptions {
+  /** Pre-authorized budget cap. Use object form to specify only budget_usdc + expires_at. */
   mandate?: Mandate | { budget_usdc: number; expires_at?: string };
-  /** Override request id (default: auto-generated UUID v4) */
+  /** Override request id (default: auto-generated UUID v4). */
   requestId?: string;
+  /** AbortController signal — cancel mid-flight, also stops retries. */
   signal?: AbortSignal;
+  /** Override the client's default timeout for this call only. */
+  timeoutMs?: number;
 }

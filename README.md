@@ -180,6 +180,68 @@ const guide = await JecpClient.agentGuide();
 
 ---
 
+## Production-grade defaults (v0.2)
+
+```typescript
+const jecp = new JecpClient({
+  agentId, apiKey,
+  // All optional, sensible defaults:
+  timeoutMs: 30_000,                  // per-call default
+  retryConfig: { maxRetries: 3 },     // exp backoff + jitter on 5xx/408/429/network
+  logger: console,                    // observe retries/timeouts/errors
+});
+
+// AbortSignal + per-call timeout supported on every method
+const ctl = new AbortController();
+const r = await jecp.invoke('a/b', 'c', input, {
+  signal: ctl.signal,
+  timeoutMs: 60_000,
+});
+console.log('attempts taken:', r.attempts);
+console.log('idempotency key:', r.request_id);
+```
+
+Auto-retry preserves the same `request_id` across attempts so the Hub's idempotency
+cache prevents double-charging.
+
+## Browser / edge runtime
+
+For Cloudflare Workers, Deno, Vite/webpack browser builds, or any runtime without
+`node:crypto`:
+
+```typescript
+import { JecpClient, JecpProvider } from '@jecpdev/sdk/browser';
+```
+
+The browser entry uses Web Crypto API exclusively. Same public API, different
+HMAC backend. Build output is split (`dist/index.js` for Node,
+`dist/index-browser.js` for edge).
+
+## Webhook verification
+
+When the Hub posts asynchronous events (`invocation.completed`,
+`wallet.low_balance`, `provider.kyc_status_changed`):
+
+```typescript
+import { verifyWebhook } from '@jecpdev/sdk';
+
+app.post('/jecp/webhook', async (req) => {
+  try {
+    const event = await verifyWebhook({
+      body: req.rawBody,                                // raw bytes
+      signature: req.headers['x-jecp-webhook-signature'],
+      timestamp: req.headers['x-jecp-webhook-timestamp'],
+      secret: process.env.JECP_WEBHOOK_SECRET!,
+    });
+    // event.type, event.data
+  } catch (e) {
+    return new Response('invalid signature', { status: 401 });
+  }
+});
+```
+
+Replay window defaults to ±5 min. Configurable via `replayWindowSec`.
+
 ## Examples
 
 Runnable examples in [`examples/`](./examples):

@@ -1,20 +1,28 @@
 /**
- * @jecpdev/sdk — Official TypeScript SDK for JECP
- * Joint Execution & Commerce Protocol — https://jecp.dev
+ * @jecpdev/sdk/browser — browser/edge runtime entry point.
  *
- * Default entry point: includes JecpClient + node-based JecpProvider.
- * For browser/edge runtimes, import from `@jecpdev/sdk/browser` instead.
+ * Imports the JecpClient (which uses fetch — works everywhere) plus
+ * the WebCrypto-based JecpProvider, and skips the node:crypto-based one.
+ *
+ * Use this in:
+ * - Cloudflare Workers
+ * - Deno
+ * - Vite/webpack browser builds
+ * - Bun browser-side
+ *
+ * @example
+ *   import { JecpClient, JecpProvider } from '@jecpdev/sdk/browser';
  */
 
 export { JecpClient } from './client.js';
 export type { InvokeResult } from './client.js';
 
-export { JecpProvider } from './provider.js';
+export { JecpProvider } from './provider-browser.js';
 export type {
   ProviderHandlerFn,
   ParsedJecpRequest,
   JecpProviderOptions,
-} from './provider.js';
+} from './provider-browser.js';
 
 export {
   JecpError,
@@ -28,12 +36,6 @@ export {
   InsufficientTrustError,
   ProviderError,
 } from './errors.js';
-
-export {
-  verifyWebhook,
-  WebhookVerificationError,
-} from './webhook.js';
-export type { WebhookEvent, VerifyWebhookOptions } from './webhook.js';
 
 export {
   DEFAULT_RETRY,

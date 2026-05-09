@@ -1,7 +1,9 @@
 /**
  * JECP Agent client — invoke capabilities, manage wallet, discover catalog.
  *
- * Usage:
+ * v0.2: auto-retry, AbortSignal, per-call timeout, logger injection.
+ *
+ * @example
  *   import { JecpClient } from '@jecpdev/sdk';
  *   const jecp = new JecpClient({ agentId, apiKey });
  *   const result = await jecp.invoke('jobdonebot/content-factory', 'translate', {
@@ -12,16 +14,24 @@
 import type {
   AgentRegisterRequest,
   AgentRegisterResponse,
-  BillingSummary,
   CatalogResponse,
   InvokeOptions,
   InvokeSuccess,
   JecpClientOptions,
   ProviderRef,
+  BillingSummary,
   TopupRequest,
   TopupResponse,
 } from './types.js';
 import { JecpError } from './errors.js';
+import {
+  DEFAULT_RETRY,
+  delayForAttempt,
+  isRetriableError,
+  sleep,
+  type RetryConfig,
+} from './retry.js';
+import { noopLogger, type Logger } from './logger.js';
 
 const DEFAULT_BASE_URL = 'https://jecp.dev';
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -42,13 +52,19 @@ export interface InvokeResult<T = unknown> {
   wallet_balance_after?: number;
   /** Original JECP envelope (for advanced cases). */
   envelope: InvokeSuccess<T>;
+  /** Number of retry attempts taken before this call succeeded (0 = first try). */
+  attempts: number;
+  /** Idempotency key actually sent (the JECP `id` field). */
+  request_id: string;
 }
 
 export class JecpClient {
   public readonly baseUrl: string;
   private readonly agentId: string;
   private readonly apiKey: string;
-  private readonly timeoutMs: number;
+  private readonly defaultTimeoutMs: number;
+  private readonly retryConfig: RetryConfig;
+  private readonly logger: Logger;
   private readonly fetchImpl: typeof fetch;
 
   constructor(opts: JecpClientOptions) {
@@ -57,20 +73,22 @@ export class JecpClient {
     this.agentId = opts.agentId;
     this.apiKey = opts.apiKey;
     this.baseUrl = (opts.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, '');
-    this.timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    this.defaultTimeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    this.retryConfig = { ...DEFAULT_RETRY, ...(opts.retryConfig ?? {}) };
+    this.logger = opts.logger ?? noopLogger;
     this.fetchImpl = opts.fetch ?? fetch;
   }
 
   /**
-   * Invoke a JECP capability. Throws a typed JecpError on failure with `next_action`.
+   * Invoke a JECP capability. Auto-retries transient failures (5xx, 408, 429, network).
+   * Throws a typed JecpError on terminal failure with `.nextAction` for recovery.
    *
    * @example
-   * const result = await jecp.invoke('deepl/translate', 'translate', {
-   *   text: 'Hello', target_lang: 'JA'
-   * });
-   * console.log(result.output);          // { translated: 'こんにちは' }
-   * console.log(result.billing.charged); // true
-   * console.log(result.wallet_balance_after); // 19.995
+   *   const r = await jecp.invoke('deepl/translate', 'translate', input, {
+   *     mandate: { budget_usdc: 1.00 },
+   *     timeoutMs: 60_000,
+   *     signal: abortController.signal,
+   *   });
    */
   async invoke<T = unknown>(
     capability: string,
@@ -78,9 +96,10 @@ export class JecpClient {
     input: unknown,
     options: InvokeOptions = {},
   ): Promise<InvokeResult<T>> {
+    const request_id = options.requestId ?? randomId();
     const body = {
       jecp: '1.0' as const,
-      id: options.requestId ?? randomId(),
+      id: request_id,
       capability,
       action,
       input,
@@ -89,7 +108,14 @@ export class JecpClient {
       }),
     };
 
-    const data = await this.post<InvokeSuccess<T>>('/v1/invoke', body, options.signal);
+    const { data, attempts } = await this.requestWithRetry<InvokeSuccess<T>>({
+      method: 'POST',
+      path: '/v1/invoke',
+      body,
+      signal: options.signal,
+      timeoutMs: options.timeoutMs,
+      authed: true,
+    });
 
     return {
       output: data.result,
@@ -97,39 +123,66 @@ export class JecpClient {
       provider: data.provider,
       wallet_balance_after: data.wallet_balance_after,
       envelope: data,
+      attempts,
+      request_id,
     };
   }
 
   /**
-   * List all live capabilities (core + third-party).
-   * No authentication required — this is a public catalog.
+   * List all live capabilities (core + third-party). Public, no auth.
    */
-  async catalog(): Promise<CatalogResponse> {
-    return this.get<CatalogResponse>('/v1/capabilities');
+  async catalog(options: { signal?: AbortSignal; timeoutMs?: number } = {}): Promise<CatalogResponse> {
+    const { data } = await this.requestWithRetry<CatalogResponse>({
+      method: 'GET',
+      path: '/v1/capabilities',
+      authed: false,
+      signal: options.signal,
+      timeoutMs: options.timeoutMs,
+    });
+    return data;
   }
 
   /**
    * Create a Stripe Checkout session to top up the agent's wallet.
-   * Returns a `url` to open in browser; balance is credited via webhook on payment.
    */
-  async topup(amount: 5 | 20 | 100, returnTo?: string): Promise<TopupResponse> {
-    const body: TopupRequest = { amount, ...(returnTo && { returnTo }) };
-    return this.post<TopupResponse>('/api/agents/topup', body);
+  async topup(
+    amount: 5 | 20 | 100,
+    options: { returnTo?: string; signal?: AbortSignal; timeoutMs?: number } = {},
+  ): Promise<TopupResponse> {
+    if (![5, 20, 100].includes(amount)) {
+      throw new Error('JecpClient.topup: amount must be 5, 20, or 100');
+    }
+    const body: TopupRequest = { amount, ...(options.returnTo && { returnTo: options.returnTo }) };
+    const { data } = await this.requestWithRetry<TopupResponse>({
+      method: 'POST',
+      path: '/api/agents/topup',
+      body,
+      authed: true,
+      signal: options.signal,
+      timeoutMs: options.timeoutMs,
+    });
+    return data;
   }
 
   /**
    * Get a personalized share kit for spreading JECP to other agents/developers.
-   * Includes referral URL, ethical guidelines, and pre-written messages.
    */
-  async shareKit(): Promise<unknown> {
-    return this.getAuthed<unknown>('/api/agents/share-kit');
+  async shareKit(options: { signal?: AbortSignal; timeoutMs?: number } = {}): Promise<unknown> {
+    const { data } = await this.requestWithRetry<unknown>({
+      method: 'GET',
+      path: '/api/agents/share-kit',
+      authed: true,
+      signal: options.signal,
+      timeoutMs: options.timeoutMs,
+    });
+    return data;
   }
 
   // ─── static methods ────────────────────────────────────────
 
   /**
-   * Register a new JECP agent. Returns agent_id + api_key (one-time only — save them).
-   * No authentication required for registration itself.
+   * Register a new JECP agent. Returns agent_id + api_key — save them, they're
+   * shown only once.
    */
   static async register(
     request: AgentRegisterRequest,
@@ -142,7 +195,7 @@ export class JecpClient {
       body: JSON.stringify(request),
     });
     if (!res.ok) {
-      const errBody = await res.json().catch(() => ({}));
+      const errBody = (await res.json().catch(() => ({}))) as { error?: string };
       throw JecpError.fromBody(
         { error: { code: 'REGISTER_FAILED', message: errBody.error || 'Registration failed' } },
         res.status,
@@ -152,8 +205,7 @@ export class JecpClient {
   }
 
   /**
-   * Fetch the JECP agent guide JSON — machine-readable spec for AI agents
-   * to understand what JECP is and how to use/spread it.
+   * Fetch /.well-known/agent-guide.json — machine-readable spec for AI agents.
    */
   static async agentGuide(baseUrl: string = DEFAULT_BASE_URL): Promise<unknown> {
     const url = `${baseUrl.replace(/\/+$/, '')}/.well-known/agent-guide.json`;
@@ -164,57 +216,110 @@ export class JecpClient {
 
   // ─── internals ─────────────────────────────────────────────
 
-  private headers(extra: Record<string, string> = {}): Record<string, string> {
-    return {
-      'X-Agent-ID': this.agentId,
-      'X-API-Key': this.apiKey,
-      'Content-Type': 'application/json',
-      ...extra,
-    };
+  private headers(authed: boolean, extra: Record<string, string> = {}): Record<string, string> {
+    const base: Record<string, string> = { 'Content-Type': 'application/json', ...extra };
+    if (authed) {
+      base['X-Agent-ID'] = this.agentId;
+      base['X-API-Key'] = this.apiKey;
+    }
+    return base;
   }
 
-  private async post<T>(
-    path: string,
-    body: unknown,
-    signal?: AbortSignal,
-  ): Promise<T> {
-    return this.request<T>('POST', path, body, signal);
+  private async requestWithRetry<T>(opts: {
+    method: string;
+    path: string;
+    body?: unknown;
+    authed: boolean;
+    signal?: AbortSignal;
+    timeoutMs?: number;
+  }): Promise<{ data: T; attempts: number }> {
+    const maxAttempts = this.retryConfig.maxRetries + 1;
+    let lastError: JecpError | undefined;
+
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      try {
+        const data = await this.requestOnce<T>(opts);
+        return { data, attempts: attempt };
+      } catch (e) {
+        if (!(e instanceof JecpError)) throw e;
+        lastError = e;
+
+        const retriable = isRetriableError(e.status, e.code);
+        const isLast = attempt === maxAttempts - 1;
+        if (!retriable || isLast) {
+          this.logger.error?.(`request failed (attempt ${attempt + 1}/${maxAttempts})`, {
+            method: opts.method,
+            path: opts.path,
+            code: e.code,
+            status: e.status,
+            retriable,
+          });
+          throw e;
+        }
+
+        // Compute next-attempt delay (honor Retry-After header from RateLimitError context)
+        const retryAfterSec = (e.raw as { retry_after_sec?: number } | undefined)?.retry_after_sec;
+        const delayMs = delayForAttempt(attempt, this.retryConfig, retryAfterSec);
+        this.logger.warn?.(`retrying after ${Math.round(delayMs)}ms`, {
+          method: opts.method,
+          path: opts.path,
+          attempt: attempt + 1,
+          maxAttempts,
+          code: e.code,
+        });
+        await sleep(delayMs, opts.signal);
+      }
+    }
+
+    // Unreachable — loop always returns or throws
+    throw lastError ?? new Error('JecpClient: retry loop exhausted unexpectedly');
   }
 
-  private async get<T>(path: string, signal?: AbortSignal): Promise<T> {
-    return this.request<T>('GET', path, undefined, signal);
-  }
+  private async requestOnce<T>(opts: {
+    method: string;
+    path: string;
+    body?: unknown;
+    authed: boolean;
+    signal?: AbortSignal;
+    timeoutMs?: number;
+  }): Promise<T> {
+    const url = `${this.baseUrl}${opts.path}`;
+    const timeoutMs = opts.timeoutMs ?? this.defaultTimeoutMs;
 
-  private async getAuthed<T>(path: string, signal?: AbortSignal): Promise<T> {
-    return this.request<T>('GET', path, undefined, signal, true);
-  }
-
-  private async request<T>(
-    method: string,
-    path: string,
-    body: unknown,
-    signal?: AbortSignal,
-    authed: boolean = method !== 'GET' || path.includes('/agents/'),
-  ): Promise<T> {
-    const url = `${this.baseUrl}${path}`;
-    const ctl = new AbortController();
-    const timeoutId = setTimeout(() => ctl.abort(), this.timeoutMs);
-    if (signal) signal.addEventListener('abort', () => ctl.abort());
+    const internalCtl = new AbortController();
+    const timeoutId = setTimeout(() => internalCtl.abort(), timeoutMs);
+    const onExternalAbort = () => internalCtl.abort();
+    if (opts.signal) opts.signal.addEventListener('abort', onExternalAbort);
 
     let res: Response;
     try {
       res = await this.fetchImpl(url, {
-        method,
-        headers: authed ? this.headers() : { 'Content-Type': 'application/json' },
-        body: body !== undefined ? JSON.stringify(body) : undefined,
-        signal: ctl.signal,
+        method: opts.method,
+        headers: this.headers(opts.authed),
+        body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
+        signal: internalCtl.signal,
+      });
+    } catch (e) {
+      // Distinguish abort from network error
+      const wasAborted = opts.signal?.aborted;
+      const wasTimedOut = !wasAborted && internalCtl.signal.aborted;
+      const message =
+        wasAborted ? 'Request aborted by caller' :
+        wasTimedOut ? `Request timed out after ${timeoutMs}ms` :
+        e instanceof Error ? e.message : 'Network error';
+      throw new JecpError({
+        code: wasAborted ? 'ABORTED' : (wasTimedOut ? 'TIMEOUT' : 'NETWORK_ERROR'),
+        message,
+        status: 0,
+        raw: e,
       });
     } finally {
       clearTimeout(timeoutId);
+      opts.signal?.removeEventListener('abort', onExternalAbort);
     }
 
     const text = await res.text();
-    let data: any;
+    let data: { status?: string; error?: { code?: string; message?: string }; next_action?: unknown };
     try {
       data = text ? JSON.parse(text) : {};
     } catch {
@@ -227,7 +332,15 @@ export class JecpClient {
     }
 
     if (!res.ok || data.status === 'failed') {
-      throw JecpError.fromBody(data, res.status);
+      // Capture Retry-After header for rate limit handling
+      const retryAfter = res.headers.get('retry-after');
+      const enrichedRaw = retryAfter
+        ? { ...(data as object), retry_after_sec: parseInt(retryAfter, 10) }
+        : data;
+      throw JecpError.fromBody(
+        { ...(data as object), ...(retryAfter && { retry_after_sec: parseInt(retryAfter, 10) }) } as Parameters<typeof JecpError.fromBody>[0],
+        res.status,
+      );
     }
     return data as T;
   }
@@ -238,19 +351,20 @@ export class JecpClient {
     if ('agent_id' in m && 'api_key' in m) {
       return m;
     }
-    return {
+    const out: { agent_id: string; api_key: string; budget_usdc?: number; expires_at?: string } = {
       agent_id: this.agentId,
       api_key: this.apiKey,
-      ...(m.budget_usdc !== undefined && { budget_usdc: m.budget_usdc }),
-      ...(m.expires_at && { expires_at: m.expires_at }),
     };
+    if (m.budget_usdc !== undefined) out.budget_usdc = m.budget_usdc;
+    if (m.expires_at) out.expires_at = m.expires_at;
+    return out;
   }
 }
 
 // ─── helpers ─────────────────────────────────────────────────
 
 function randomId(): string {
-  // RFC4122 v4 lite — fine for request idempotency
+  // RFC4122 v4 — fine for request idempotency
   if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
     return (crypto as { randomUUID(): string }).randomUUID();
   }
