@@ -46,6 +46,9 @@ Resilience, observability, and edge-runtime support.
 - `JecpClient.topup()` signature: second arg is now an options object
   (`{ returnTo?, signal?, timeoutMs? }`) instead of a bare `returnTo` string.
   **This is a breaking change** but topup hasn't shipped at scale yet.
+- **Minimum Node version: 20** (was 18). Node 18 reached EOL 2025-04, and the
+  `/browser` entry uses global `crypto`, which is Node 19+ only. Rather than
+  carry a Node-18 shim, we bumped `engines.node` to `>=20`.
 - `JecpClient.catalog()` and `JecpClient.shareKit()` now accept
   `{ signal?, timeoutMs? }`.
 - `topup()` now validates `amount` is one of 5/20/100 at the SDK level
