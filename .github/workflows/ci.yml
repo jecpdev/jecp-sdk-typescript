@@ -20,14 +20,12 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
-          cache: 'npm'
+          # No `cache: npm` — we don't commit package-lock.json (rollup's
+          # per-platform native deps make a single committed lockfile lie
+          # to one platform or the other; see github.com/npm/cli/issues/4828).
+          # Re-resolving on each run is ~5s and worth the simplicity.
 
-      # The lockfile is committed for reproducibility but rollup's per-platform
-      # optional deps don't survive cross-platform npm ci. Drop the lockfile
-      # and let npm install resolve native binaries fresh on the runner.
-      # See: github.com/npm/cli/issues/4828
-      - run: rm -f package-lock.json
-      - run: npm install --no-audit --no-fund
+      - run: npm install --no-audit --no-fund --no-package-lock
 
       - name: Type check
         run: npx tsc --noEmit
@@ -48,12 +46,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
-          cache: 'npm'
-      # The lockfile is committed for reproducibility but rollup's per-platform
-      # optional deps don't survive cross-platform npm ci. Drop the lockfile
-      # and let npm install resolve native binaries fresh on the runner.
-      # See: github.com/npm/cli/issues/4828
-      - run: rm -f package-lock.json
-      - run: npm install --no-audit --no-fund
+      - run: npm install --no-audit --no-fund --no-package-lock
       - run: npm run build
       - run: npm publish --dry-run --access public
