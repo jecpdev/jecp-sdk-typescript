@@ -62,7 +62,9 @@ export interface InvokeResult<T = unknown> {
 export class JecpClient {
   public readonly baseUrl: string;
   private readonly agentId: string;
-  private readonly apiKey: string;
+  /** Mutable so rotateApiKey() can update it in place; callers see the new
+   *  key in the rotateApiKey() result and SHOULD persist it externally. */
+  private apiKey: string;
   private readonly defaultTimeoutMs: number;
   private readonly retryConfig: RetryConfig;
   private readonly logger: Logger;
@@ -292,6 +294,50 @@ export class JecpClient {
       signal: options.signal,
       timeoutMs: options.timeoutMs,
     });
+    return data;
+  }
+
+  // ─── M2 — API key rotation (Phase B) ───────────────────────
+
+  /**
+   * Rotate this agent's API key. Returns the new key + the timestamp until
+   * which the previous key remains accepted (default 7 days).
+   *
+   * The new key is shown only ONCE — persist it immediately. The client's
+   * in-memory `apiKey` is updated so subsequent calls use the new key
+   * without reconstruction.
+   *
+   * @param options.graceSeconds Override the grace window (60..604800).
+   * @example
+   *   const r = await jecp.rotateApiKey();
+   *   await secrets.write('JECP_API_KEY', r.api_key);
+   *   console.log('old key valid until', r.previous_key_valid_until);
+   */
+  async rotateApiKey(
+    options: { graceSeconds?: number; signal?: AbortSignal; timeoutMs?: number } = {},
+  ): Promise<{
+    agent_id: string;
+    api_key: string;
+    previous_key_valid_until: string;
+    grace_seconds: number;
+  }> {
+    const body: Record<string, unknown> = {};
+    if (options.graceSeconds !== undefined) body.grace_seconds = options.graceSeconds;
+    const { data } = await this.requestWithRetry<{
+      agent_id: string;
+      api_key: string;
+      previous_key_valid_until: string;
+      grace_seconds: number;
+    }>({
+      method: 'POST',
+      path: '/v1/agents/me/rotate-key',
+      body,
+      authed: true,
+      signal: options.signal,
+      timeoutMs: options.timeoutMs,
+    });
+    // Update in-memory key so the same client instance keeps working.
+    this.apiKey = data.api_key;
     return data;
   }
 

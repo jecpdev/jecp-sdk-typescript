@@ -390,6 +390,69 @@ describe('JecpClient — topup validation', () => {
   });
 });
 
+describe('JecpClient — rotateApiKey (M2 / Phase B)', () => {
+  it('POSTs to /v1/agents/me/rotate-key and updates in-memory key', async () => {
+    let capturedHeaders: Headers | undefined;
+    let capturedPath: string | undefined;
+    const fakeFetch = async (url: string, init?: RequestInit) => {
+      capturedPath = url;
+      capturedHeaders = new Headers(init?.headers);
+      return jsonResponse({
+        agent_id: 'a',
+        api_key: 'jdb_ak_NEW_KEY',
+        previous_key_valid_until: '2026-05-16T00:00:00Z',
+        grace_seconds: 604800,
+      });
+    };
+    const c = new JecpClient({
+      agentId: 'a',
+      apiKey: 'jdb_ak_OLD_KEY',
+      fetch: fakeFetch as unknown as typeof fetch,
+    });
+    const r = await c.rotateApiKey();
+    expect(r.api_key).toBe('jdb_ak_NEW_KEY');
+    expect(r.grace_seconds).toBe(604800);
+    expect(capturedPath).toContain('/v1/agents/me/rotate-key');
+    // first call sent the OLD key as auth
+    expect(capturedHeaders?.get('x-api-key')).toBe('jdb_ak_OLD_KEY');
+
+    // a follow-up call must use the NEW key
+    let secondHeaders: Headers | undefined;
+    (c as unknown as { fetchImpl: typeof fetch }).fetchImpl = (async (
+      _url: string,
+      init?: RequestInit,
+    ) => {
+      secondHeaders = new Headers(init?.headers);
+      return jsonResponse({
+        jecp: '1.0',
+        id: 'x',
+        status: 'success',
+        result: {},
+        provider: { namespace: 'p', capability: 'c', version: '1.0.0' },
+        billing: { charged: false, amount_usdc: 0 },
+      });
+    }) as unknown as typeof fetch;
+    await c.invoke('p/c', 'a', {});
+    expect(secondHeaders?.get('x-api-key')).toBe('jdb_ak_NEW_KEY');
+  });
+
+  it('passes graceSeconds through to the body', async () => {
+    let capturedBody: string | undefined;
+    const fakeFetch = async (_url: string, init?: RequestInit) => {
+      capturedBody = init?.body as string;
+      return jsonResponse({
+        agent_id: 'a', api_key: 'k', previous_key_valid_until: 't', grace_seconds: 3600,
+      });
+    };
+    const c = new JecpClient({
+      agentId: 'a', apiKey: 'b',
+      fetch: fakeFetch as unknown as typeof fetch,
+    });
+    await c.rotateApiKey({ graceSeconds: 3600 });
+    expect(capturedBody).toContain('"grace_seconds":3600');
+  });
+});
+
 describe('JecpClient — logger', () => {
   it('calls logger.warn on retry attempt', async () => {
     const warnings: string[] = [];
