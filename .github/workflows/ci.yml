@@ -22,8 +22,11 @@ jobs:
           node-version: ${{ matrix.node }}
           cache: 'npm'
 
-      # Use npm install (not npm ci) to re-resolve platform-specific optional deps
-      # (rollup ships per-platform native binaries that aren't pinned in lockfile).
+      # The lockfile is committed for reproducibility but rollup's per-platform
+      # optional deps don't survive cross-platform npm ci. Drop the lockfile
+      # and let npm install resolve native binaries fresh on the runner.
+      # See: github.com/npm/cli/issues/4828
+      - run: rm -f package-lock.json
       - run: npm install --no-audit --no-fund
 
       - name: Type check
@@ -46,8 +49,11 @@ jobs:
         with:
           node-version: '20'
           cache: 'npm'
-      # Use npm install (not npm ci) to re-resolve platform-specific optional deps
-      # (rollup ships per-platform native binaries that aren't pinned in lockfile).
+      # The lockfile is committed for reproducibility but rollup's per-platform
+      # optional deps don't survive cross-platform npm ci. Drop the lockfile
+      # and let npm install resolve native binaries fresh on the runner.
+      # See: github.com/npm/cli/issues/4828
+      - run: rm -f package-lock.json
       - run: npm install --no-audit --no-fund
       - run: npm run build
       - run: npm publish --dry-run --access public
