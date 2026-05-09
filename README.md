@@ -4,6 +4,7 @@
 > The open protocol for agent-to-service commerce.
 
 [![npm](https://img.shields.io/npm/v/@jecpdev/sdk.svg)](https://npmjs.com/package/@jecpdev/sdk)
+[![CI](https://github.com/jecpdev/jecp-sdk-typescript/actions/workflows/ci.yml/badge.svg)](https://github.com/jecpdev/jecp-sdk-typescript/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Spec](https://img.shields.io/badge/spec-v1.0--draft-blue.svg)](https://github.com/jecpdev/jecp-spec)
 
@@ -179,12 +180,22 @@ const guide = await JecpClient.agentGuide();
 
 ---
 
+## Examples
+
+Runnable examples in [`examples/`](./examples):
+
+- [`01-register-and-invoke.ts`](./examples/01-register-and-invoke.ts) — register + first call
+- [`02-error-recovery.ts`](./examples/02-error-recovery.ts) — `next_action` discriminated-union recovery
+- [`03-mandate-budget-cap.ts`](./examples/03-mandate-budget-cap.ts) — pre-authorized spend cap
+- [`04-provider-server.ts`](./examples/04-provider-server.ts) — Provider endpoint with HMAC
+
 ## Reference
 
 - **Spec**: <https://github.com/jecpdev/jecp-spec>
 - **Live catalog**: <https://jecp.dev/v1/capabilities>
 - **Health**: <https://jecp.dev/health>
 - **Discussions**: <https://github.com/jecpdev/jecp-spec/discussions>
+- **Changelog**: [CHANGELOG.md](./CHANGELOG.md)
 - **Email**: hello@jecp.dev
 
 ## License
