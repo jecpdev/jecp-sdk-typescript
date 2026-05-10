@@ -5,6 +5,39 @@ All notable changes to `@jecpdev/sdk` are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.2] - 2026-05-11
+
+Aligns with `jecp-spec` v1.1.0 (Phase 1, Composite SSRF defense). Backward-
+compatible — adds one new error class + one enum constant.
+
+Cites ADR-0002 (`jecp-spec/adr/0002-ssrf-defense-architecture.md`): the
+Hub's 5-layer outbound URL pipeline (parse / scheme / host normalization /
+DNS resolve / IP pin). The Hub now refuses to dereference Agent-controlled
+URLs that hit the JECP deny-list (loopback / link-local / RFC 1918 / RFC
+4193 / IPv4-mapped IPv6 / `0.0.0.0/8`) — including hostnames that resolve
+into deny ranges.
+
+### Added
+- `JecpErrorCode.URL_BLOCKED_SSRF` constant for type-safe code comparison.
+- `UrlBlockedSsrfError` class (HTTP 422) with `field` / `blockedUrl` /
+  `reason` accessors. The `reason` enum is documented at
+  `https://jecp.dev/errors/url_blocked_ssrf` and includes:
+  `parse_error`, `scheme`, `host_syntax`, `resolved_to_deny_cidr`,
+  `dns_resolve_failed`, `connect_pin_violation`.
+
+### Behavior
+- For asynchronous deref paths (webhook delivery), Hubs do not return this
+  error envelope to the caller — the originating subscribe call already
+  returned 200. Hubs mark the outbox row abandoned with
+  `last_error = "SSRF_DENIED: <reason>"` and stop retrying. Subscribers
+  observing missing webhook deliveries should check Hub-side audit
+  dashboards for `URL_BLOCKED_SSRF` entries.
+
+### Tests
+- 4 cases in `test/errors-v1.0.2.test.ts` (factory dispatch + every
+  documented subcause + missing-details graceful).
+- Total suite: 120/120 PASS (was 116).
+
 ## [0.7.1] - 2026-05-10
 
 Aligns with `jecp-spec` v1.0.2 (Phase 0 errata: K1 endpoint reconciliation +

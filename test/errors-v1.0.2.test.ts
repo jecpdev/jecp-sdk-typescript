@@ -13,6 +13,7 @@ import {
   DuplicateRequestError,
   CapabilityDeprecatedError,
   InputSchemaViolationError,
+  UrlBlockedSsrfError,
 } from '../src/errors.js';
 
 describe('JecpErrorCode constants', () => {
@@ -168,6 +169,60 @@ describe('JecpError.fromBody dispatches to v1.0.2 subclasses', () => {
     }, 400) as InputSchemaViolationError;
     expect(err.errors).toHaveLength(1);
     expect(err.errors[0].instance_path).toBe('/a');
+  });
+});
+
+describe('UrlBlockedSsrfError (v1.1.0 c10)', () => {
+  it('URL_BLOCKED_SSRF dispatches to UrlBlockedSsrfError with field/url/reason accessors', () => {
+    const err = JecpError.fromBody({
+      error: {
+        code: 'URL_BLOCKED_SSRF',
+        message: 'URL blocked by SSRF policy: webhook_destination_url resolved_to_deny_cidr',
+        details: {
+          field:             'webhook_destination_url',
+          blocked_url:       'https://127.0.0.1/webhook',
+          reason:            'resolved_to_deny_cidr',
+          documentation_url: 'https://jecp.dev/errors/url_blocked_ssrf#resolved_to_deny_cidr',
+        },
+      },
+    }, 422);
+    expect(err).toBeInstanceOf(UrlBlockedSsrfError);
+    const u = err as UrlBlockedSsrfError;
+    expect(u.status).toBe(422);
+    expect(u.code).toBe('URL_BLOCKED_SSRF');
+    expect(u.field).toBe('webhook_destination_url');
+    expect(u.blockedUrl).toBe('https://127.0.0.1/webhook');
+    expect(u.reason).toBe('resolved_to_deny_cidr');
+    expect(u.documentationUrl).toContain('/errors/url_blocked_ssrf');
+  });
+
+  it('JecpErrorCode.URL_BLOCKED_SSRF is "URL_BLOCKED_SSRF"', () => {
+    expect(JecpErrorCode.URL_BLOCKED_SSRF).toBe('URL_BLOCKED_SSRF');
+  });
+
+  it('returns undefined accessors when details missing', () => {
+    const err = JecpError.fromBody({
+      error: { code: 'URL_BLOCKED_SSRF', message: 'blocked', details: {} },
+    }, 422) as UrlBlockedSsrfError;
+    expect(err.field).toBeUndefined();
+    expect(err.blockedUrl).toBeUndefined();
+    expect(err.reason).toBeUndefined();
+  });
+
+  it('handles every documented subcause without throwing', () => {
+    const subcauses = ['parse_error', 'scheme', 'host_syntax',
+                       'resolved_to_deny_cidr', 'dns_resolve_failed',
+                       'connect_pin_violation'];
+    for (const subcause of subcauses) {
+      const err = JecpError.fromBody({
+        error: {
+          code: 'URL_BLOCKED_SSRF',
+          message: `blocked: ${subcause}`,
+          details: { field: 'endpoint_url', blocked_url: 'https://x', reason: subcause },
+        },
+      }, 422) as UrlBlockedSsrfError;
+      expect(err.reason).toBe(subcause);
+    }
   });
 });
 

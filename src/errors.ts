@@ -48,6 +48,9 @@ export const JecpErrorCode = {
   PROVIDER_UNREACHABLE:    'PROVIDER_UNREACHABLE',
   PROVIDER_ERROR:          'PROVIDER_ERROR',
 
+  // Security
+  URL_BLOCKED_SSRF:        'URL_BLOCKED_SSRF',           // v1.1.0 c10 (HTTP 422)
+
   // Internal
   INTERNAL:                'INTERNAL',
 } as const;
@@ -143,6 +146,10 @@ export class JecpError extends Error {
       // v1.0.2 K2.5
       case 'INPUT_SCHEMA_VIOLATION':
         return new InputSchemaViolationError(opts);
+
+      // v1.1.0 c10 — composite SSRF defense (spec §9.7.1, ADR-0002)
+      case 'URL_BLOCKED_SSRF':
+        return new UrlBlockedSsrfError(opts);
 
       default:
         return new JecpError(opts);
@@ -301,6 +308,48 @@ export interface InputSchemaViolation {
   instance_path: string;
   schema_path:   string;
   reason:        string;
+}
+
+/**
+ * v1.1.0 c10 — HTTP 422: the Hub refused to dereference an
+ * Agent-controlled URL because it hits the JECP SSRF deny-list.
+ * The URL itself was structurally well-formed; the Hub blocked it
+ * by policy per spec §9.7.1 + ADR-0002.
+ *
+ * `field` identifies which wire field carried the URL
+ *   ('endpoint_url' | 'webhook_destination_url' | 'callback_url').
+ * `blockedUrl` is the URL the Hub rejected (with credentials redacted).
+ * `reason` ∈ {parse_error, scheme, host_syntax, resolved_to_deny_cidr,
+ *             dns_resolve_failed, connect_pin_violation}.
+ *
+ * For asynchronous deref paths (webhook delivery), the Hub does not
+ * return this envelope to the caller — the originating subscribe call
+ * already returned 200. Instead, the Hub marks the outbox row abandoned
+ * with `last_error = 'SSRF_DENIED: <reason>'` and stops retrying.
+ */
+export class UrlBlockedSsrfError extends JecpError {
+  constructor(opts: ConstructorParameters<typeof JecpError>[0]) {
+    super(opts);
+    this.name = 'UrlBlockedSsrfError';
+  }
+
+  /** Which wire field carried the rejected URL. */
+  get field(): string | undefined {
+    const v = this.details?.['field'];
+    return typeof v === 'string' ? v : undefined;
+  }
+
+  /** The rejected URL with credentials redacted by the Hub. */
+  get blockedUrl(): string | undefined {
+    const v = this.details?.['blocked_url'];
+    return typeof v === 'string' ? v : undefined;
+  }
+
+  /** Subcause from spec §9.7.1.3. */
+  get reason(): string | undefined {
+    const v = this.details?.['reason'];
+    return typeof v === 'string' ? v : undefined;
+  }
 }
 
 /**

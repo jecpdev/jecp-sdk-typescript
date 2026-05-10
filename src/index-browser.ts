@@ -40,6 +40,8 @@ export {
   DuplicateRequestError,
   CapabilityDeprecatedError,
   InputSchemaViolationError,
+  // v1.1.0 c10 security:
+  UrlBlockedSsrfError,
   JecpErrorCode,
 } from './errors.js';
 export type { JecpErrorCodeValue, InputSchemaViolation } from './errors.js';
