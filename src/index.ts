@@ -35,6 +35,9 @@ export {
 } from './webhook.js';
 export type { WebhookEvent, VerifyWebhookOptions } from './webhook.js';
 
+export { computeProvenanceV2, computeProvenanceV1 } from './provenance.js';
+export type { ComputeProvenanceV2Input } from './provenance.js';
+
 export { JecpStream } from './streaming.js';
 export type { StreamEvent, InvokeStreamOptions } from './streaming.js';
 
