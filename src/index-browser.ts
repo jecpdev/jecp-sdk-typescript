@@ -35,7 +35,14 @@ export {
   ActionNotFoundError,
   InsufficientTrustError,
   ProviderError,
+  // v1.0.2 K2 wire-format errors:
+  UnsupportedMediaTypeError,
+  DuplicateRequestError,
+  CapabilityDeprecatedError,
+  InputSchemaViolationError,
+  JecpErrorCode,
 } from './errors.js';
+export type { JecpErrorCodeValue, InputSchemaViolation } from './errors.js';
 
 export {
   DEFAULT_RETRY,

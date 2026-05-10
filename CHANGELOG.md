@@ -5,6 +5,46 @@ All notable changes to `@jecpdev/sdk` are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.1] - 2026-05-10
+
+Aligns with `jecp-spec` v1.0.2 (Phase 0 errata: K1 endpoint reconciliation +
+K2 wire-format MUSTs + K3 bulkhead + K4 discovery). Backward-compatible —
+all additions are additive.
+
+Cites ADR-0001 (`jecp-spec/adr/0001-idempotency-provenance-interaction.md`):
+the Hub's idempotency cache key MUST include `mandate.provenance_hash`.
+SDK consumers seeing 409 `DUPLICATE_REQUEST` unexpectedly should check
+that the same `request_id` is not being reused under two distinct mandates
+(typical cause: rotated keys with the same prepared request).
+
+### Added
+- `JecpErrorCode` constants object (string-literal type) for type-safe
+  comparisons: `if (err.code === JecpErrorCode.RATE_LIMITED) {…}`.
+  Exports all v1.0.2 codes including the 5 new K2 errors.
+- `JecpError.details` field — structured `error.details` from the wire
+  envelope (per spec 03-errors §3.2). Replaces the need to dip into
+  `err.raw` for documentation URLs / retry hints / sunset metadata.
+- `JecpError.documentationUrl` getter — returns `details.documentation_url`
+  when the Hub supplied one (all v1.0.2 errors do).
+- `UnsupportedMediaTypeError` (HTTP 415, K2.1) with
+  `receivedContentType` / `expectedContentType` accessors.
+- `DuplicateRequestError` (HTTP 409, K2.2) — see ADR-0001 cite above
+  for cache-key semantics under Provenance v2.
+- `CapabilityDeprecatedError` (HTTP 410, K2.3) with `sunsetAt` and
+  `successorVersion` accessors. Mirrors RFC 8594 `Sunset` / `Deprecation`
+  / `Link` response headers into typed fields.
+- `InputSchemaViolationError` (HTTP 400, K2.5) with `errors: InputSchemaViolation[]`
+  accessor. Filters malformed entries from arbitrary servers.
+- `InputSchemaViolation` interface ({ instance_path, schema_path, reason }).
+- `RateLimitError.retryAfterSeconds` getter (HTTP 429 + Retry-After, K2.4).
+  Reads from `details.retry_after_seconds` set by the Hub to mirror the
+  HTTP `Retry-After` header into the JECP envelope.
+
+### Tests
+- `test/errors-v1.0.2.test.ts` — 12 cases covering every K2 subclass:
+  factory dispatch, accessor read paths, malformed-input resilience.
+- Total suite: 116/116 PASS (was 104).
+
 ## [0.7.0] - 2026-05-10
 
 Provenance v2 verifier + replay cache (R2 + R3 + H3 from JECP v1.0.1).
