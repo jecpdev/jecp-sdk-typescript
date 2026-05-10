@@ -5,6 +5,33 @@ All notable changes to `@jecpdev/sdk` are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2026-05-10
+
+Provenance v2 verifier + replay cache (R2 + R3 + H3 from JECP v1.0.1).
+Aligns with `jecp-spec` v1.0.1.
+
+### Added
+- `verifyProvenanceV2(input)` returning a discriminated union
+  `{ ok: true, timestamp, nonce } | { ok: false, subcause, detail }`.
+  Sync, never throws on verification failure (Stripe webhook pattern).
+  Constant-time HMAC compare via `node:crypto.timingSafeEqual`.
+  Configurable `clockSkewSec` (default 300s) + injectable `now()` for tests.
+- `createReplayCache({ ttlSec, now })` — companion in-memory LRU for
+  Provider-side replay defense. Lowercase nonce normalisation.
+- Public types: `ProvenanceSubcause`, `VerifyProvenanceV2Input`,
+  `VerifyProvenanceResult`, `ReplayCache`, `ReplayCacheOptions`.
+
+### Changed
+- Wire-format ordering: tag length validation now fires BEFORE clock-skew,
+  matching Hub Rust impl and the cross-stack fixture (closes a divergence
+  surfaced by qa-pro panel review).
+
+### Tests
+- `test/fixtures/provenance-v2-vectors.json` vendored from
+  `jecp-spec/fixtures/` (sha256 544a4901...).
+- `test/fixture.test.ts` consumes the fixture: 14 new tests.
+- Total suite: 104/104 PASS (was 90/90).
+
 ## [0.6.0] - 2026-05-10
 
 Provenance v2 (HMAC-SHA256). Aligns with `jecp-spec` v1.0.0-stable.
