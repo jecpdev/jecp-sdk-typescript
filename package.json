@@ -1,6 +1,6 @@
 {
   "name": "@jecpdev/sdk",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Official TypeScript SDK for JECP — Joint Execution & Commerce Protocol. Build agents that hold wallets and pay per call. Or sell your service to AI agents.",
   "type": "module",
   "main": "./dist/index.cjs",
@@ -18,7 +18,12 @@
       "require": "./dist/index-browser.cjs"
     }
   },
-  "files": ["dist", "README.md", "LICENSE", "CHANGELOG.md"],
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
   "engines": {
     "node": ">=20"
   },

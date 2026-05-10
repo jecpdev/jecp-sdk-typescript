@@ -5,6 +5,42 @@ All notable changes to `@jecpdev/sdk` are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-05-10
+
+Provenance v2 (HMAC-SHA256). Aligns with `jecp-spec` v1.0.0-stable.
+
+### Added
+- `computeProvenanceV2({ apiKey, agentId, timestamp?, nonce? })` — returns
+  the `"v2:<unix_seconds>:<nonce_hex>:<hmac_hex>"` wire string for
+  `mandate.provenance_hash`. Defaults: `timestamp = floor(Date.now()/1000)`,
+  `nonce = randomBytes(16).toString('hex')`. Validates nonce ≥ 16 hex chars.
+- `computeProvenanceV1({ apiKey, agentId, totalCalls })` — `@deprecated`
+  helper for emitting legacy SHA-256 hashes. Sunset 2026-11-01.
+- Type export: `ComputeProvenanceV2Input`.
+
+### Changed
+- README + JSDoc: v1 sunset wording aligned with spec §5.7 (verifier removal
+  2026-11-01; `Deprecation` / `Sunset` response headers from 2026-08-01).
+
+### Tests
+- 9 new vitest cases (round-trip, key isolation, default ts/nonce,
+  malformed input, v1 reference, v1 prefix-collision demonstration).
+- Full suite: 77/77 PASS.
+
+## [0.5.0] - 2026-05-09
+
+API key rotation (M2). Aligns with Hub `/v1/agents/me/rotate-key` and
+`/v1/providers/me/rotate-key` endpoints.
+
+### Added
+- `JecpClient.rotateKey({ graceSeconds?, revokeOld? })` returning the new
+  api_key plus a `previous_key_valid_until` timestamp.
+- `JecpProvider.rotateKey(...)` mirror for Provider key rotation.
+
+### Changed
+- Internal request retries treat HTTP 401 from a rotated key as a
+  one-shot retry with `previous_api_key` (within grace window).
+
 ## [0.4.0] - 2026-05-09
 
 Streaming responses (W5).
