@@ -8,8 +8,9 @@
  * compares constant-time. Timestamps must be within ±300s of Hub clock; nonces
  * are tracked for 600s to prevent replay.
  *
- * **v1 (legacy, sunset 2026-08-01)** — `SHA256("agent_id:total_calls:api_key[..8]")`.
- * Cannot be computed after key rotation (plaintext is NULLed). Migrate to v2.
+ * **v1 (legacy, sunset 2026-11-01)** — `SHA256("agent_id:total_calls:api_key[..8]")`.
+ * Cannot be computed after key rotation (plaintext is NULLed). `Deprecation` /
+ * `Sunset` response headers begin 2026-08-01; final removal 2026-11-01. Migrate to v2.
  *
  * @example
  * ```ts
@@ -57,12 +58,14 @@ export function computeProvenanceV2(input: ComputeProvenanceV2Input): string {
 }
 
 /**
- * **Deprecated** — Provenance v1 (SHA-256). Sunset 2026-08-01. Use
+ * **Deprecated** — Provenance v1 (SHA-256). Sunset 2026-11-01. Use
  * {@link computeProvenanceV2} for new code.
  *
  * Hub will return `PROVENANCE_MISMATCH` (HTTP 403) for v1 hashes after the
  * sunset date, and v1 cannot be computed for agents whose api_key has been
- * rotated to the bcrypt-only column (the plaintext is NULLed).
+ * rotated to the bcrypt-only column (the plaintext is NULLed). Hubs attach
+ * `Deprecation: true` and `Sunset: Sat, 01 Nov 2026 00:00:00 GMT` response
+ * headers from 2026-08-01 onward whenever a v1 hash is accepted.
  *
  * @deprecated since 2026-05-10, removed 2026-11-01 — switch to {@link computeProvenanceV2}.
  */
