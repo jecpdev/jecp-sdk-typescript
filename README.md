@@ -82,6 +82,83 @@ const { url } = await jecp.topup(20);
 
 ---
 
+## Quick start: pay agents in USDC on Base (x402 mode) — v0.8+
+
+Skip Stripe entirely: pay each invoke from a Base wallet in USDC. No top-ups,
+no human-in-the-loop, settled in seconds via the [x402 protocol](https://x402.org).
+Spec: [Locked Design v1.1.1 §3 + §6](https://github.com/jecpdev/jecp-spec).
+
+```typescript
+import { JecpClient } from '@jecpdev/sdk';
+import { Wallet } from 'ethers'; // or any Signer-conforming adapter
+
+// 1. Build a Signer adapter — the SDK never sees your private key
+const ethers = new Wallet(process.env.AGENT_BASE_KEY!);
+const signer = {
+  async getAddress() { return ethers.address as `0x${string}`; },
+  async signEIP3009(p) {
+    // EIP-712 typed-data sign for x402 transferWithAuthorization
+    const sig = await ethers.signTypedData(
+      { name: 'USD Coin', version: '2', chainId: p.chainId, verifyingContract: p.verifyingContract },
+      { TransferWithAuthorization: [
+        { name: 'from',        type: 'address' },
+        { name: 'to',          type: 'address' },
+        { name: 'value',       type: 'uint256' },
+        { name: 'validAfter',  type: 'uint256' },
+        { name: 'validBefore', type: 'uint256' },
+        { name: 'nonce',       type: 'bytes32' },
+      ]},
+      { from: p.from, to: p.to, value: p.value, validAfter: p.validAfter, validBefore: p.validBefore, nonce: p.nonce },
+    );
+    // Split 65-byte sig into v/r/s
+    const r = ('0x' + sig.slice(2, 66)) as `0x${string}`;
+    const s = ('0x' + sig.slice(66, 130)) as `0x${string}`;
+    const v = parseInt(sig.slice(130, 132), 16);
+    return { v, r, s };
+  },
+};
+
+// 2. Construct the client with payment config
+const jecp = new JecpClient({
+  agentId: process.env.JECP_AGENT_ID!,
+  apiKey:  process.env.JECP_API_KEY!,
+  payment: {
+    mode: 'auto',   // 'wallet' | 'x402' | 'auto' (default)
+    signer,         // SDK uses this only when 402 advertises x402
+    facilitatorTimeoutMs: 30_000,
+  },
+});
+
+// 3. Invoke — SDK handles 402 → X-Payment retry transparently
+const r = await jecp.invoke('jobdonebot/bg-remover-pro', 'remove', {
+  image_url: 'https://example.com/cat.png',
+});
+
+console.log(r.output);          // capability result
+console.log(r.payment?.txHash); // 0x... — settlement tx on Base
+console.log(r.payment?.amount_usd); // 0.20
+
+// Estimate cost before invoking
+const cost = await jecp.estimateCost('jobdonebot/bg-remover-pro');
+// → { usd: 0.20, usdc: 200000n, gasEstimateUsd: 0.004 }
+```
+
+**Modes**:
+- `'auto'` (default): try x402 first when capability accepts it; otherwise
+  surface the typed 402 error so the caller can drive Stripe Checkout via
+  `err.nextAction`.
+- `'wallet'`: identical to pre-0.8 behavior. Never attempts x402.
+- `'x402'`: refuse to pay via wallet. Throws `InsufficientPaymentOptionsError`
+  if the capability is wallet-only or no signer is configured.
+
+**Typed errors** (Locked Design §3.5):
+`X402PaymentInvalidError`, `X402NotAcceptedError`, `X402SettlementTimeoutError`,
+`X402FacilitatorUnreachableError`, `X402SettlementReusedError`,
+`InsufficientPaymentOptionsError`. All extend `JecpError`; each exposes
+`.subcause` and `.retryable`.
+
+---
+
 ## Quick start: become a Provider (server side)
 
 If you're a service provider receiving JECP invocations:

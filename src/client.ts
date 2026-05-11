@@ -24,7 +24,7 @@ import type {
   TopupRequest,
   TopupResponse,
 } from './types.js';
-import { JecpError } from './errors.js';
+import { JecpError, InsufficientPaymentOptionsError } from './errors.js';
 import {
   DEFAULT_RETRY,
   delayForAttempt,
@@ -33,6 +33,20 @@ import {
   type RetryConfig,
 } from './retry.js';
 import { noopLogger, type Logger } from './logger.js';
+import type {
+  PaymentConfig,
+  PaymentMode,
+  Signer,
+  PaymentRequirement,
+  X402Receipt,
+  CostEstimate,
+} from './x402/types.js';
+import {
+  buildX402Payload,
+  encodeXPaymentHeader,
+  decodeXPaymentResponseHeader,
+  findX402Requirement,
+} from './x402/payload.js';
 
 const DEFAULT_BASE_URL = 'https://jecp.dev';
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -57,6 +71,19 @@ export interface InvokeResult<T = unknown> {
   attempts: number;
   /** Idempotency key actually sent (the JECP `id` field). */
   request_id: string;
+  /**
+   * Payment receipt — populated when the call was paid via x402
+   * (parsed from the `X-Payment-Response` header). `undefined` for
+   * wallet-path invokes. Locked design §3.4 + §6.3.
+   */
+  payment?: X402Receipt;
+}
+
+/** Internal — output of `requestRawOnce`. Not exported. */
+interface RawResponse {
+  status: number;
+  headers: Record<string, string>;
+  json: Record<string, unknown> | undefined;
 }
 
 export class JecpClient {
@@ -69,6 +96,13 @@ export class JecpClient {
   private readonly retryConfig: RetryConfig;
   private readonly logger: Logger;
   private readonly fetchImpl: typeof fetch;
+  /**
+   * x402 payment config (Locked design §6.1). When `mode='auto'|'x402'` and
+   * a `signer` is provided, the SDK attempts EIP-3009 settlement on a 402.
+   */
+  private readonly paymentMode: PaymentMode;
+  private readonly signer?: Signer;
+  private readonly facilitatorTimeoutMs: number;
 
   constructor(opts: JecpClientOptions) {
     if (!opts.agentId) throw new Error('JecpClient: agentId is required');
@@ -80,6 +114,17 @@ export class JecpClient {
     this.retryConfig = { ...DEFAULT_RETRY, ...(opts.retryConfig ?? {}) };
     this.logger = opts.logger ?? noopLogger;
     this.fetchImpl = opts.fetch ?? fetch;
+
+    const payment = opts.payment;
+    this.paymentMode = payment?.mode ?? 'auto';
+    this.signer = payment?.signer;
+    this.facilitatorTimeoutMs = payment?.facilitatorTimeoutMs ?? 30_000;
+
+    if (this.paymentMode === 'x402' && !this.signer) {
+      throw new Error(
+        'JecpClient: payment.mode="x402" requires payment.signer to be set (locked design §6.1).'
+      );
+    }
   }
 
   /**
@@ -165,6 +210,20 @@ export class JecpClient {
    * Invoke a JECP capability. Auto-retries transient failures (5xx, 408, 429, network).
    * Throws a typed JecpError on terminal failure with `.nextAction` for recovery.
    *
+   * **x402 support (v0.8.0, Locked design §6.1)**: when `payment.mode` is
+   * `'auto'` (default) or `'x402'` AND a `Signer` is configured, the SDK
+   * transparently handles HTTP 402 responses:
+   *
+   * 1. Parse `payment.accepts[]` from the 402 body
+   * 2. Pick the `scheme:'exact'` (x402) entry (admiral D: Stripe-first ordering)
+   * 3. Build + sign an EIP-3009 `transferWithAuthorization` via `Signer`
+   * 4. Re-issue POST with `X-Payment` header (same `X-Request-Id` for idempotency)
+   * 5. On success, decode `X-Payment-Response` and attach to `result.payment`
+   * 6. On x402 failure with mode='auto': silent fallback would require a
+   *    wallet top-up; for now we propagate the typed `X402*Error` so the
+   *    caller can handle (the wallet path is a different UX flow — see
+   *    `InsufficientPaymentOptionsError` for the composite fallback case)
+   *
    * @example
    *   const r = await jecp.invoke('deepl/translate', 'translate', input, {
    *     mandate: { budget_usdc: 1.00 },
@@ -190,21 +249,190 @@ export class JecpClient {
       }),
     };
 
-    const { data, attempts } = await this.requestWithRetry<InvokeSuccess<T>>({
+    // Normal request through the existing retry layer. 5xx/429/408/network
+    // errors retry transparently; 4xx (including 402) come back as typed
+    // JecpError that we inspect for x402 handling.
+    try {
+      const { data, attempts } = await this.requestWithRetry<InvokeSuccess<T>>({
+        method: 'POST',
+        path: '/v1/invoke',
+        body,
+        signal: options.signal,
+        timeoutMs: options.timeoutMs,
+        authed: true,
+      });
+      return {
+        output: data.result,
+        billing: data.billing,
+        provider: data.provider,
+        wallet_balance_after: data.wallet_balance_after,
+        envelope: data,
+        attempts,
+        request_id,
+      };
+    } catch (err) {
+      // Only intercept 402 PAYMENT_REQUIRED when in auto or x402 mode.
+      if (!(err instanceof JecpError) || err.status !== 402 || this.paymentMode === 'wallet') {
+        throw err;
+      }
+      const raw = err.raw as { payment?: { accepts?: PaymentRequirement[] } } | undefined;
+      const accepts = raw?.payment?.accepts;
+      const x402Req = accepts ? findX402Requirement(accepts) : undefined;
+
+      // mode='x402' but capability doesn't accept x402 → composite error.
+      if (this.paymentMode === 'x402' && !x402Req) {
+        throw new InsufficientPaymentOptionsError({
+          code: 'INSUFFICIENT_PAYMENT_OPTIONS',
+          message: 'mode="x402" but capability does not accept x402 payments.',
+          status: 402,
+          raw,
+          capabilityRejectedX402: true,
+        });
+      }
+
+      // No x402 entry OR no signer → propagate original 402 (wallet path).
+      // Caller must drive Stripe Checkout via err.nextAction (`topup`).
+      if (!x402Req || !this.signer) {
+        throw err;
+      }
+
+      // x402 retry path — sign + re-POST with X-Payment.
+      return this.invokeX402Path<T>(body, request_id, x402Req, options);
+    }
+  }
+
+  /**
+   * Estimate the USD/USDC cost (and rough on-chain gas) of invoking a
+   * capability. Reads from the catalog manifest; falls back to a heuristic
+   * gas estimate if the Hub does not surface live gas data.
+   *
+   * Locked design §6.3 (Developer UX helper).
+   *
+   * @param capabilityId - "namespace/capability" identifier
+   */
+  async estimateCost(capabilityId: string): Promise<CostEstimate> {
+    const [namespace, _capability] = capabilityId.split('/');
+    if (!namespace) {
+      throw new Error(`JecpClient.estimateCost: invalid capabilityId "${capabilityId}"`);
+    }
+
+    // Pull the catalog entry for this capability.
+    const catalog = await this.catalog({ namespace, pageSize: 200 });
+    const items = (catalog.third_party_capabilities ?? []) as Array<{
+      id?: string;
+      manifest?: { actions?: Array<{ pricing?: { base?: string | number; amount_usd?: number; amount_usdc?: string } }> };
+    }>;
+    const match = items.find(c => c.id === capabilityId);
+
+    // Default amount: $0.005 — JECP free-tier reference price.
+    let usd = 0.005;
+    if (match?.manifest?.actions?.[0]?.pricing) {
+      const p = match.manifest.actions[0].pricing;
+      if (typeof p.amount_usd === 'number') usd = p.amount_usd;
+      else if (typeof p.base === 'number') usd = p.base;
+      else if (typeof p.base === 'string') {
+        const num = parseFloat(p.base.replace(/^\$/, ''));
+        if (Number.isFinite(num)) usd = num;
+      }
+    }
+
+    // USDC micros: 1 USDC = 1_000_000 atomic units; round to nearest.
+    const usdc = BigInt(Math.round(usd * 1_000_000));
+
+    // Base mainnet gas estimate at typical 2026 rates:
+    //   ~70k gas units × ~0.02 gwei × $3000/ETH ≈ $0.004
+    // Round to single-significant figure. Caller treats this as advisory.
+    const gasEstimateUsd = 0.004;
+
+    return { usd, usdc, gasEstimateUsd };
+  }
+
+  // ─── invoke() x402 implementation ──────────────────────────
+
+  /**
+   * x402 invoke path — sign EIP-3009 + re-POST with X-Payment header.
+   * Idempotency: SDK preserves the same `body.id` (= JECP request_id) on
+   * the retry, matching Hub idempotency cache semantics (locked design §3.2).
+   */
+  private async invokeX402Path<T>(
+    body: Record<string, unknown>,
+    request_id: string,
+    x402Req: import('./x402/types.js').X402ExactRequirement,
+    options: InvokeOptions,
+  ): Promise<InvokeResult<T>> {
+    if (!this.signer) {
+      throw new InsufficientPaymentOptionsError({
+        code: 'INSUFFICIENT_PAYMENT_OPTIONS',
+        message: 'x402 path requested but no signer is configured.',
+        status: 402,
+        signerMissing: true,
+      });
+    }
+
+    const payload = await buildX402Payload(x402Req, this.signer);
+    const xPayment = encodeXPaymentHeader(payload);
+
+    // The X-Payment retry uses a tighter timeout (facilitatorTimeoutMs) and
+    // adds the X-Payment + X-Request-Id headers. We do NOT use the generic
+    // retry loop here because settlement is on-chain — retrying with the
+    // same nonce produces X402_SETTLEMENT_REUSED. The wire-level retry on
+    // X402_SETTLEMENT_TIMEOUT (retryable per spec §3.5) would require a
+    // fresh signature, which is the caller's responsibility for v1.1.0.
+    const settledTimeout = options.timeoutMs ?? this.facilitatorTimeoutMs;
+    const raw = await this.requestRawOnce({
       method: 'POST',
       path: '/v1/invoke',
       body,
-      signal: options.signal,
-      timeoutMs: options.timeoutMs,
       authed: true,
+      signal: options.signal,
+      timeoutMs: settledTimeout,
+      extraHeaders: {
+        'X-Payment': xPayment,
+        'X-Request-Id': request_id,
+      },
     });
 
+    if (raw.status === 200 && raw.json?.status !== 'failed') {
+      const result = this.buildResultFromRaw<T>(raw, request_id, 1);
+      // Attach receipt from X-Payment-Response header.
+      const decoded = decodeXPaymentResponseHeader(raw.headers['x-payment-response']);
+      if (decoded) {
+        result.payment = {
+          method: 'x402',
+          txHash: decoded.txHash,
+          networkId: decoded.networkId,
+          amount_usd: this.usdcMicrosToUsd(BigInt(x402Req.amount)),
+          amount_usdc: BigInt(x402Req.amount),
+        };
+      }
+      return result;
+    }
+
+    // x402 retry failed — surface the typed error.
+    throw JecpError.fromBody(
+      raw.json as Parameters<typeof JecpError.fromBody>[0],
+      raw.status,
+    );
+  }
+
+  /** USDC micros (1 USDC = 1_000_000) → USD as float. */
+  private usdcMicrosToUsd(micros: bigint): number {
+    return Number(micros) / 1_000_000;
+  }
+
+  /** Build an InvokeResult from a low-level raw response. Used by the x402 retry path. */
+  private buildResultFromRaw<T>(
+    raw: RawResponse,
+    request_id: string,
+    attempts: number,
+  ): InvokeResult<T> {
+    const env = raw.json as unknown as InvokeSuccess<T>;
     return {
-      output: data.result,
-      billing: data.billing,
-      provider: data.provider,
-      wallet_balance_after: data.wallet_balance_after,
-      envelope: data,
+      output: env.result,
+      billing: env.billing,
+      provider: env.provider,
+      wallet_balance_after: env.wallet_balance_after,
+      envelope: env,
       attempts,
       request_id,
     };
@@ -662,6 +890,73 @@ export class JecpClient {
       );
     }
     return data as T;
+  }
+
+  /**
+   * Low-level fetch that does NOT throw on 4xx/5xx — returns the raw
+   * `{ status, headers, json }` so callers (specifically the x402 retry
+   * path in `invoke()`) can inspect 402 envelopes without going through
+   * the JecpError factory.
+   *
+   * Network/timeout errors still throw the standard `JecpError`.
+   * Extra headers are merged on top of the auth headers.
+   */
+  private async requestRawOnce(opts: {
+    method: string;
+    path: string;
+    body?: unknown;
+    authed: boolean;
+    signal?: AbortSignal;
+    timeoutMs?: number;
+    extraHeaders?: Record<string, string>;
+  }): Promise<RawResponse> {
+    const url = `${this.baseUrl}${opts.path}`;
+    const timeoutMs = opts.timeoutMs ?? this.defaultTimeoutMs;
+
+    const internalCtl = new AbortController();
+    const timeoutId = setTimeout(() => internalCtl.abort(), timeoutMs);
+    const onExternalAbort = () => internalCtl.abort();
+    if (opts.signal) opts.signal.addEventListener('abort', onExternalAbort);
+
+    let res: Response;
+    try {
+      res = await this.fetchImpl(url, {
+        method: opts.method,
+        headers: this.headers(opts.authed, opts.extraHeaders ?? {}),
+        body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
+        signal: internalCtl.signal,
+      });
+    } catch (e) {
+      const wasAborted = opts.signal?.aborted;
+      const wasTimedOut = !wasAborted && internalCtl.signal.aborted;
+      const message =
+        wasAborted ? 'Request aborted by caller' :
+        wasTimedOut ? `Request timed out after ${timeoutMs}ms` :
+        e instanceof Error ? e.message : 'Network error';
+      throw new JecpError({
+        code: wasAborted ? 'ABORTED' : (wasTimedOut ? 'TIMEOUT' : 'NETWORK_ERROR'),
+        message,
+        status: 0,
+        raw: e,
+      });
+    } finally {
+      clearTimeout(timeoutId);
+      opts.signal?.removeEventListener('abort', onExternalAbort);
+    }
+
+    const text = await res.text();
+    let json: Record<string, unknown> | undefined;
+    try {
+      json = text ? (JSON.parse(text) as Record<string, unknown>) : undefined;
+    } catch {
+      // Non-JSON body — leave json undefined; caller may inspect status only.
+    }
+
+    // Lowercase header map for case-insensitive lookup.
+    const headers: Record<string, string> = {};
+    res.headers.forEach((v, k) => { headers[k.toLowerCase()] = v; });
+
+    return { status: res.status, headers, json };
   }
 
   private normalizeMandate(

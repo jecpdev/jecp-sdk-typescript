@@ -5,6 +5,117 @@ All notable changes to `@jecpdev/sdk` are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] - 2026-05-11
+
+Aligns with `jecp-spec` v1.1.0 (x402 integration). Backward-compatible —
+all additions are additive; the wallet path is unchanged.
+
+Cites the **x402 Integration Locked Design v1.1.1** (`docs/jecp/x402-integration-locked-design.md`)
+§3 (Wire format), §6.1 (Agent UX), §6.3 (Developer UX). Agents now have two
+payment rails on `/v1/invoke`:
+- `wallet`: Stripe top-up (existing path, unchanged)
+- `x402`: USDC on Base via EIP-3009 + JECP Splitter contract — agent-native,
+  no human top-up, on-chain 85/10/5 single-block atomic revenue split
+
+The SDK never holds private keys. A `Signer` adapter (your `ethers.Wallet`,
+`viem` WalletClient, AWS KMS, etc.) handles the EIP-712 typed-data signing;
+the SDK assembles the X402 v1 PaymentPayload and the `X-Payment` header.
+
+### Added
+
+#### Client surface
+
+- `JecpClientOptions.payment` — new optional config:
+  ```typescript
+  new JecpClient({
+    agentId, apiKey,
+    payment: {
+      mode: 'auto',                 // 'wallet' | 'x402' | 'auto' (default 'auto')
+      signer: myEthersWallet,       // any Signer-conforming adapter
+      facilitatorTimeoutMs: 30_000, // tighter timeout for x402 retry
+    },
+  });
+  ```
+- `JecpClient.invoke()` transparently handles 402 → X-Payment retry when
+  mode allows. Idempotency: same `X-Request-Id` on both attempts.
+- `JecpClient.estimateCost(capabilityId)` — Promise<CostEstimate> with
+  `{ usd, usdc, gasEstimateUsd }`. Pulls from catalog manifest.
+- `InvokeResult.payment?: X402Receipt` — populated on successful x402 path
+  with `{ method, txHash, networkId, amount_usd, amount_usdc }` (parsed from
+  the `X-Payment-Response` header).
+
+#### Types
+
+- `PaymentMode` (`'wallet' | 'x402' | 'auto'`)
+- `PaymentMethod` (`'wallet' | 'x402'`)
+- `PaymentConfig`, `Signer`, `EIP3009AuthorizationParams`
+- `PaymentRequirement` (= `StripeWalletRequirement | X402ExactRequirement`)
+- `PaymentChallenge`, `X402PaymentPayload`, `X402PaymentResponse`
+- `X402Receipt`, `CostEstimate`
+
+#### Error classes (5 wire + 1 SDK-composite per Locked Design §3.5 + §6.3)
+
+- `X402PaymentInvalidError` (HTTP 422) — facilitator rejected payload;
+  `subcause` ∈ {signature_invalid, amount_mismatch, nonce_reused, expired}
+- `X402NotAcceptedError` (HTTP 422) — capability is wallet-only
+- `X402SettlementTimeoutError` (HTTP 504) — retryable
+- `X402FacilitatorUnreachableError` (HTTP 502) — retryable for transport
+  transients; non-retryable for cert/signature pin mismatches
+- `X402SettlementReusedError` (HTTP 409) — tx_hash or nonce replay
+- `InsufficientPaymentOptionsError` — SDK composite; thrown when mode='x402'
+  but the 402 had no x402 entry, or when no signer is configured and no
+  wallet path is viable
+
+All carry `subcause` accessor + `retryable` boolean. `JecpErrorCode` enum
+extended with the 5 new wire codes + `INSUFFICIENT_PAYMENT_OPTIONS`.
+
+#### x402 helpers (low-level, exported from root)
+
+- `buildX402Payload(req, signer)` — signs via Signer + assembles X402 v1
+  payload
+- `buildEIP3009Params(req, from, nowSec?)` — pure constructor (no I/O)
+- `encodeXPaymentHeader(payload)` — base64 + 8KB cap enforcement
+- `decodeXPaymentResponseHeader(value)` — parse `X-Payment-Response`
+- `findX402Requirement(accepts)` — find the `scheme:'exact'` entry
+- `networkToChainId('base'|'base-sepolia')` — 8453 / 84532
+- `freshNonce()` — 32-byte cryptographic random for EIP-3009 nonce
+- `packSignature(v, r, s)` — concatenate to 65-byte hex (normalizes v=0/1→27/28)
+
+### Behavior
+
+- **Mode='auto' (default)**: on 402, if a Signer is set AND the 402's
+  `accepts[]` includes an x402 entry, SDK signs + retries with X-Payment.
+  Otherwise propagates the original 402 as a typed JecpError carrying
+  `next_action: { type: 'topup' }` so the caller can drive Stripe Checkout.
+- **Mode='wallet'**: never attempts x402, even when 402 advertises it.
+  Identical to pre-0.8.0 behavior.
+- **Mode='x402'**: constructor throws if no signer; SDK refuses to fall
+  back to wallet (intentional — caller wants strict x402).
+- **Idempotency**: `X-Request-Id` (= JECP `body.id`) is preserved between
+  the initial 402 and the X-Payment retry. The Hub's idempotency cache
+  treats them as one logical request.
+- **Wallet path unchanged**: agents not opting into payment config see
+  zero behavior change. v0.7.x code keeps working.
+
+### Tests
+
+- `test/x402.test.ts` — 19 cases: helper unit tests (encoder, signature
+  packing, nonce generation, network mapping), constructor validation,
+  auto-mode happy path with receipt assertion, wallet-only mode safety,
+  x402-only mode + composite error, 422 error parsing, estimateCost path.
+- Total suite: 139/139 PASS (was 120).
+
+### Out of scope (deferred to v0.9 / v1.0)
+
+- Auto-fallback from x402 failure → wallet top-up flow (locked design §6.1
+  notes this requires UX coordination with the caller; v0.8 surfaces
+  typed errors instead)
+- Auto-retry on `X402_SETTLEMENT_TIMEOUT` (would need fresh nonce + re-sign)
+- Coinbase Onramp helper (`@jecpdev/sdk/x402/onramp`) — locked design
+  §6.1 / Panel 4 §A.4 (deferred; planned for v0.8.1)
+- Hub-side x402 implementation lands separately (jecp-spec v1.1.0 + Hub
+  Fly v##)
+
 ## [0.7.2] - 2026-05-11
 
 Aligns with `jecp-spec` v1.1.0 (Phase 1, Composite SSRF defense). Backward-

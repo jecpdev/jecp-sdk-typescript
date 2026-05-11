@@ -51,6 +51,16 @@ export const JecpErrorCode = {
   // Security
   URL_BLOCKED_SSRF:        'URL_BLOCKED_SSRF',           // v1.1.0 c10 (HTTP 422)
 
+  // x402 integration (v1.1.0, Locked Design §3.5 — 5 codes)
+  X402_PAYMENT_INVALID:        'X402_PAYMENT_INVALID',        // 422 — facilitator rejected payload
+  X402_NOT_ACCEPTED:           'X402_NOT_ACCEPTED',           // 422 — capability is wallet-only
+  X402_SETTLEMENT_TIMEOUT:     'X402_SETTLEMENT_TIMEOUT',     // 504 — facilitator slow / chain congested
+  X402_FACILITATOR_UNREACHABLE:'X402_FACILITATOR_UNREACHABLE',// 502 — DNS / cert pin / signature pin
+  X402_SETTLEMENT_REUSED:      'X402_SETTLEMENT_REUSED',      // 409 — tx_hash or nonce replay
+
+  // SDK-side composite (no wire equivalent)
+  INSUFFICIENT_PAYMENT_OPTIONS:'INSUFFICIENT_PAYMENT_OPTIONS',// 402 — neither wallet nor x402 path viable
+
   // Internal
   INTERNAL:                'INTERNAL',
 } as const;
@@ -150,6 +160,18 @@ export class JecpError extends Error {
       // v1.1.0 c10 — composite SSRF defense (spec §9.7.1, ADR-0002)
       case 'URL_BLOCKED_SSRF':
         return new UrlBlockedSsrfError(opts);
+
+      // v1.1.0 x402 — locked design §3.5
+      case 'X402_PAYMENT_INVALID':
+        return new X402PaymentInvalidError(opts);
+      case 'X402_NOT_ACCEPTED':
+        return new X402NotAcceptedError(opts);
+      case 'X402_SETTLEMENT_TIMEOUT':
+        return new X402SettlementTimeoutError(opts);
+      case 'X402_FACILITATOR_UNREACHABLE':
+        return new X402FacilitatorUnreachableError(opts);
+      case 'X402_SETTLEMENT_REUSED':
+        return new X402SettlementReusedError(opts);
 
       default:
         return new JecpError(opts);
@@ -381,3 +403,165 @@ export class InputSchemaViolationError extends JecpError {
     );
   }
 }
+
+// ─── x402 integration (v1.1.0, Locked Design §3.5 / §6.3) ────────────────
+//
+// Five wire-format error classes + one SDK-composite for unrecoverable cases.
+// All cite spec §3.5 + locked design §3.5 (subcause enumeration).
+
+/**
+ * v1.1.0 X402_PAYMENT_INVALID — HTTP 422: the facilitator (x402.org) rejected
+ * the X-Payment payload. Non-retryable; fix the signed authorization.
+ *
+ * `subcause` ∈ { signature_invalid, amount_mismatch, nonce_reused, expired }.
+ *
+ * Locked design §3.5 + spec/03-error-catalog.md §X402_PAYMENT_INVALID.
+ */
+export class X402PaymentInvalidError extends JecpError {
+  constructor(opts: ConstructorParameters<typeof JecpError>[0]) {
+    super(opts);
+    this.name = 'X402PaymentInvalidError';
+  }
+
+  /** Subcause string (signature_invalid / amount_mismatch / nonce_reused / expired). */
+  get subcause(): string | undefined {
+    const v = this.details?.['subcause'];
+    return typeof v === 'string' ? v : undefined;
+  }
+
+  /** Always false — re-signing a fresh authorization is required. */
+  get retryable(): false { return false; }
+}
+
+/**
+ * v1.1.0 X402_NOT_ACCEPTED — HTTP 422: the capability does not advertise
+ * x402 in its `payment_methods` list. Switch to mode='wallet' or pick another
+ * Provider.
+ *
+ * `subcause` ∈ { capability_wallet_only, network_unsupported }.
+ *
+ * Locked design §3.5.
+ */
+export class X402NotAcceptedError extends JecpError {
+  constructor(opts: ConstructorParameters<typeof JecpError>[0]) {
+    super(opts);
+    this.name = 'X402NotAcceptedError';
+  }
+
+  get subcause(): string | undefined {
+    const v = this.details?.['subcause'];
+    return typeof v === 'string' ? v : undefined;
+  }
+
+  /** Always false. */
+  get retryable(): false { return false; }
+}
+
+/**
+ * v1.1.0 X402_SETTLEMENT_TIMEOUT — HTTP 504: the facilitator did not confirm
+ * settlement within Hub's timeout window. Safe to retry; the SDK auto-retry
+ * layer treats this as transient by default.
+ *
+ * `subcause` ∈ { facilitator_slow, chain_congested }.
+ */
+export class X402SettlementTimeoutError extends JecpError {
+  constructor(opts: ConstructorParameters<typeof JecpError>[0]) {
+    super(opts);
+    this.name = 'X402SettlementTimeoutError';
+  }
+
+  get subcause(): string | undefined {
+    const v = this.details?.['subcause'];
+    return typeof v === 'string' ? v : undefined;
+  }
+
+  /** True — locked design §3.5 marks this Retry: yes. */
+  get retryable(): true { return true; }
+}
+
+/**
+ * v1.1.0 X402_FACILITATOR_UNREACHABLE — HTTP 502: Hub could not reach the
+ * trusted facilitator (DNS / TCP / TLS / cert pin / Ed25519 signature pin
+ * mismatch). Retryable for transient causes; cert/signature pin failures
+ * indicate a potential compromise and should be investigated (the Hub
+ * logs an alert).
+ *
+ * `subcause` ∈ { dns_fail, connection_refused, cert_pin_mismatch,
+ *                signature_pin_mismatch }.
+ */
+export class X402FacilitatorUnreachableError extends JecpError {
+  constructor(opts: ConstructorParameters<typeof JecpError>[0]) {
+    super(opts);
+    this.name = 'X402FacilitatorUnreachableError';
+  }
+
+  get subcause(): string | undefined {
+    const v = this.details?.['subcause'];
+    return typeof v === 'string' ? v : undefined;
+  }
+
+  /**
+   * True for transport-level transients (dns_fail, connection_refused).
+   * False for pin failures — those represent a trust failure, not a glitch.
+   */
+  get retryable(): boolean {
+    const s = this.subcause;
+    return s === 'dns_fail' || s === 'connection_refused';
+  }
+}
+
+/**
+ * v1.1.0 X402_SETTLEMENT_REUSED — HTTP 409: the X-Payment payload (by tx_hash
+ * or EIP-3009 nonce) has already been settled. The SDK should generate a
+ * fresh nonce and re-sign. Non-retryable with the same payload.
+ *
+ * `subcause` ∈ { tx_hash_seen, nonce_reused }.
+ */
+export class X402SettlementReusedError extends JecpError {
+  constructor(opts: ConstructorParameters<typeof JecpError>[0]) {
+    super(opts);
+    this.name = 'X402SettlementReusedError';
+  }
+
+  get subcause(): string | undefined {
+    const v = this.details?.['subcause'];
+    return typeof v === 'string' ? v : undefined;
+  }
+
+  /** Always false (with the same payload — caller must re-sign). */
+  get retryable(): false { return false; }
+}
+
+/**
+ * SDK-composite error: mode='auto' tried every viable path and none worked.
+ * Typical causes:
+ * - mode='wallet' + 402 (no top-up done)
+ * - mode='x402' but no signer configured
+ * - mode='x402' but capability's 402 had no x402 accept entry
+ * - mode='auto' but neither wallet has balance nor signer is present
+ *
+ * Carries the original Hub `next_action` (typically `topup`) so callers can
+ * present the right recovery UI.
+ *
+ * Locked design §6.3 (Developer UX — error classes).
+ */
+export class InsufficientPaymentOptionsError extends JecpError {
+  constructor(opts: ConstructorParameters<typeof JecpError>[0] & {
+    /** Set true if the agent has no signer; SDK exposes for diagnostics. */
+    signerMissing?: boolean;
+    /** Set true if mode='x402' and the 402 had no x402 entry. */
+    capabilityRejectedX402?: boolean;
+  }) {
+    super(opts);
+    this.name = 'InsufficientPaymentOptionsError';
+    this.signerMissing = opts.signerMissing ?? false;
+    this.capabilityRejectedX402 = opts.capabilityRejectedX402 ?? false;
+  }
+
+  public readonly signerMissing: boolean;
+  public readonly capabilityRejectedX402: boolean;
+
+  /** Always false — caller must change configuration or top up first. */
+  get retryable(): false { return false; }
+}
+

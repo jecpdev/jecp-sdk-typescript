@@ -34,9 +34,43 @@ export {
   InputSchemaViolationError,
   // v1.1.0 c10 security:
   UrlBlockedSsrfError,
+  // v1.1.0 x402 (Locked design §3.5 + §6.3):
+  X402PaymentInvalidError,
+  X402NotAcceptedError,
+  X402SettlementTimeoutError,
+  X402FacilitatorUnreachableError,
+  X402SettlementReusedError,
+  InsufficientPaymentOptionsError,
   JecpErrorCode,
 } from './errors.js';
 export type { JecpErrorCodeValue, InputSchemaViolation } from './errors.js';
+
+// ─── v1.1.0 x402 integration (Locked design §3 + §6) ─────────
+export {
+  buildX402Payload,
+  buildEIP3009Params,
+  encodeXPaymentHeader,
+  decodeXPaymentResponseHeader,
+  findX402Requirement,
+  networkToChainId,
+  freshNonce,
+  packSignature,
+} from './x402/payload.js';
+export type {
+  PaymentMethod,
+  PaymentMode,
+  PaymentConfig,
+  Signer,
+  EIP3009AuthorizationParams,
+  PaymentRequirement,
+  StripeWalletRequirement,
+  X402ExactRequirement,
+  PaymentChallenge,
+  X402PaymentPayload,
+  X402PaymentResponse,
+  X402Receipt,
+  CostEstimate,
+} from './x402/types.js';
 
 export {
   verifyWebhook,

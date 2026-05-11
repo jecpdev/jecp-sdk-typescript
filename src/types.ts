@@ -5,6 +5,7 @@
 
 import type { Logger } from './logger.js';
 import type { RetryConfig } from './retry.js';
+import type { PaymentConfig } from './x402/types.js';
 
 // ─── Mandate (Spec §4) ───────────────────────────────────────
 
@@ -189,6 +190,13 @@ export interface JecpClientOptions {
   logger?: Logger;
   /** Custom fetch impl (e.g. for testing). */
   fetch?: typeof fetch;
+  /**
+   * x402 payment configuration (v0.8.0). When provided with a `Signer`,
+   * the SDK transparently handles HTTP 402 by signing an EIP-3009
+   * authorization and re-issuing the call with `X-Payment` header.
+   * Locked design §6.1.
+   */
+  payment?: PaymentConfig;
 }
 
 export interface InvokeOptions {
