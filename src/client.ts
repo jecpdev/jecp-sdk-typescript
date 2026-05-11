@@ -401,6 +401,7 @@ export class JecpClient {
           method: 'x402',
           txHash: decoded.txHash,
           networkId: decoded.networkId,
+          ...(decoded.payer ? { payer: decoded.payer } : {}),
           amount_usd: this.usdcMicrosToUsd(BigInt(x402Req.amount)),
           amount_usdc: BigInt(x402Req.amount),
         };

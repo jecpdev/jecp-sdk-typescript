@@ -166,15 +166,21 @@ export interface X402PaymentPayload {
 }
 
 /**
- * Decoded `X-Payment-Response` header (base64 JSON) — Locked design §3.4.
+ * Decoded `X-Payment-Response` header (base64 JSON) — Spec §5 / Locked design §3.4.
+ *
+ * Spec canonical wire keys are `transaction`, `network`, `payer`. The SDK
+ * normalizes both old (`txHash` / `networkId`) and new keys to this shape;
+ * `payer` is optional only because pre-v1.1.0 Hub builds did not emit it.
  * Returned by Hub on successful x402 invoke; attached to InvokeResult.payment.
  */
 export interface X402PaymentResponse {
   success: true;
-  /** Settlement transaction hash on Base. */
+  /** Settlement transaction hash on Base. Spec key: `transaction`. */
   txHash: `0x${string}`;
-  /** Network identifier — typically "base". */
+  /** Network identifier — typically "base". Spec key: `network`. */
   networkId: string;
+  /** Payer EOA address (the agent's wallet). Optional for legacy Hub builds. */
+  payer?: `0x${string}`;
 }
 
 /**
@@ -187,6 +193,8 @@ export interface X402Receipt {
   txHash: `0x${string}`;
   /** Network id from X-Payment-Response. */
   networkId: string;
+  /** Payer EOA address (when present in receipt). */
+  payer?: `0x${string}`;
   /** USD-equivalent of the settled amount. */
   amount_usd: number;
   /** USDC micros sent. */

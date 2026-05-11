@@ -154,13 +154,19 @@ export function encodeXPaymentHeader(payload: X402PaymentPayload): string {
  * Decode the `X-Payment-Response` header (base64 JSON) returned by Hub on
  * successful x402 settlement.
  *
- * @returns parsed `{ success, txHash, networkId }` or `undefined` if the
- * header was absent / malformed.
+ * Spec §5 canonical keys are `transaction`, `network`, `payer`. Pre-1.1.0
+ * builds emitted `txHash` / `networkId`; this decoder accepts both for
+ * one-minor-version backward compatibility and normalizes to the canonical
+ * `txHash` / `networkId` fields on the returned object (Audit A-C2 / A-C3).
+ *
+ * @returns parsed `{ success, txHash, networkId, payer? }` or `undefined`
+ *   if the header was absent / malformed.
  */
 export function decodeXPaymentResponseHeader(value: string | null | undefined): {
   success: true;
   txHash: `0x${string}`;
   networkId: string;
+  payer?: `0x${string}`;
 } | undefined {
   if (!value) return undefined;
   try {
@@ -176,15 +182,29 @@ export function decodeXPaymentResponseHeader(value: string | null | undefined): 
     }
     const parsed = JSON.parse(json) as {
       success?: boolean;
+      // Spec canonical (v1.1.0+).
+      transaction?: string;
+      network?: string;
+      payer?: string;
+      // Legacy aliases (pre-v1.1.0 Hub builds; accepted for 1 minor version).
       txHash?: string;
       networkId?: string;
     };
-    if (parsed.success === true && parsed.txHash && parsed.networkId) {
-      return {
+    const txHash = parsed.transaction ?? parsed.txHash;
+    const networkId = parsed.network ?? parsed.networkId;
+    if (parsed.success === true && txHash && networkId) {
+      const out: {
+        success: true;
+        txHash: `0x${string}`;
+        networkId: string;
+        payer?: `0x${string}`;
+      } = {
         success: true,
-        txHash: parsed.txHash as `0x${string}`,
-        networkId: parsed.networkId,
+        txHash: txHash as `0x${string}`,
+        networkId,
       };
+      if (parsed.payer) out.payer = parsed.payer as `0x${string}`;
+      return out;
     }
   } catch {
     // Malformed — return undefined; the caller will report success without receipt.

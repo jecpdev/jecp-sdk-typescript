@@ -171,13 +171,28 @@ describe('x402 helpers', () => {
     expect(decoded.payload.authorization.value).toBe('200000');
   });
 
-  it('decodeXPaymentResponseHeader parses base64 JSON receipts', () => {
+  it('decodeXPaymentResponseHeader parses base64 JSON receipts (legacy txHash/networkId)', () => {
     const json = JSON.stringify({ success: true, txHash: '0xdeadbeef', networkId: 'base' });
     const b64 = Buffer.from(json, 'utf-8').toString('base64');
     const parsed = decodeXPaymentResponseHeader(b64);
     expect(parsed).toBeDefined();
     expect(parsed?.txHash).toBe('0xdeadbeef');
     expect(parsed?.networkId).toBe('base');
+  });
+
+  it('decodeXPaymentResponseHeader parses spec-canonical transaction/network/payer (Audit A-C2)', () => {
+    const json = JSON.stringify({
+      success: true,
+      transaction: '0xc0ffee01',
+      network: 'base',
+      payer: '0xAAAA000000000000000000000000000000000001',
+    });
+    const b64 = Buffer.from(json, 'utf-8').toString('base64');
+    const parsed = decodeXPaymentResponseHeader(b64);
+    expect(parsed).toBeDefined();
+    expect(parsed?.txHash).toBe('0xc0ffee01');
+    expect(parsed?.networkId).toBe('base');
+    expect(parsed?.payer).toBe('0xAAAA000000000000000000000000000000000001');
   });
 
   it('decodeXPaymentResponseHeader returns undefined for malformed input', () => {
