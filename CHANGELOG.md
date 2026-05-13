@@ -5,6 +5,108 @@ All notable changes to `@jecpdev/sdk` are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.2] - 2026-05-13
+
+UX P0 + SDK safety caps. Backward-compatible — all additions are additive.
+
+Closes audit findings:
+- **H-4** (audit-D §A.3 P0-1, P0-2, P0-3, P0-4): `walletFromEnv()` helper,
+  `docs/x402-quickstart.md`, `examples/05-x402-invoke.ts`, error `nextAction`
+  enrichment.
+- **H-6** (panel-4 §A.3 + audit-B cross-finding): `maxPerCallUsdc`,
+  `maxPerHourUsdc`, `maxGasRatio` SDK safety caps with 3 typed error classes.
+
+### Added
+
+#### Signer helpers (H-4.1)
+- `walletFromEnv({ envVar?, rpcUrl? })` — reads a 0x-prefixed 64-hex-char
+  private key from `process.env[envVar || 'AGENT_BASE_KEY']`, validates it,
+  returns a `Signer` that produces canonical USDC EIP-712 signatures on Base.
+- `walletFromPrivateKey(privateKeyHex, rpcUrl?)` — direct programmatic form.
+- Both lazy-load `ethers` v6 via `require()`; the SDK does NOT declare ethers
+  as a dependency. Missing peer dep throws an actionable install hint.
+- Exported from `@jecpdev/sdk` (Node entry) and `@jecpdev/sdk/x402/signers`.
+- Not exported from `@jecpdev/sdk/browser` (process.env is Node-only).
+
+#### Safety caps (H-6)
+- `PaymentConfig.maxPerCallUsdc?: bigint` — per-invoke spend ceiling (USDC micros).
+  Throws `X402AmountCapExceededError` before signing.
+- `PaymentConfig.maxPerHourUsdc?: bigint` — rolling 1h spend ceiling, scoped
+  to the `JecpClient` instance. Throws `X402HourlyCapExceededError` before
+  signing. Window GC happens at check time; failed settlements don't count.
+- `PaymentConfig.maxGasRatio?: number` — refuse if `gasEstimateUsd / amountUsd`
+  exceeds this ratio (defense against fee-malleability under congestion).
+  Throws `X402GasRatioExceededError` before signing. Prefers Hub-supplied
+  `x402Req.extra.gas_estimate_usd` over the SDK heuristic ($0.004).
+
+#### Error classes (3 new + 5 enriched)
+- `X402AmountCapExceededError` — carries `requestedUsdc`, `capUsdc`,
+  `nextAction.type = 'raise_cap'`.
+- `X402HourlyCapExceededError` — carries `requestedUsdc`, `cumulativeUsdc`,
+  `capUsdc`, `nextAction.type = 'review_intent'`.
+- `X402GasRatioExceededError` — carries `gasUsd`, `amountUsd`,
+  `observedRatio`, `capRatio`, `nextAction.type = 'check_gas'`.
+
+#### Error `nextAction` enrichment (H-4.4)
+All 5 wire `X402_*` error classes now synthesize a default `nextAction`
+when the Hub did not supply one. The Hub's value still wins when present.
+
+| Error | Subcause | Default `nextAction.type` |
+|---|---|---|
+| `X402PaymentInvalidError` | `signature_invalid` | `check_signer` |
+| `X402PaymentInvalidError` | other | `resign` |
+| `X402NotAcceptedError` | — | `switch_to_wallet` |
+| `X402SettlementTimeoutError` | — | `retry_after` |
+| `X402FacilitatorUnreachableError` | `*_pin_mismatch` | `upgrade_client` |
+| `X402FacilitatorUnreachableError` | other | `retry_after` |
+| `X402SettlementReusedError` | — | `resign` |
+| `InsufficientPaymentOptionsError` | `signerMissing` | `link_wallet` |
+| `InsufficientPaymentOptionsError` | `capabilityRejectedX402` | `switch_to_wallet` |
+
+`NextAction` discriminated union extended with 8 new variants:
+`topup_url`, `check_signer`, `resign`, `switch_to_wallet`, `check_gas`,
+`raise_cap`, `review_intent`, `link_wallet`. All carry an optional `hint`.
+
+#### `JecpErrorCode` enum
+Added 3 SDK-only codes: `X402_AMOUNT_CAP_EXCEEDED`,
+`X402_HOURLY_CAP_EXCEEDED`, `X402_GAS_RATIO_EXCEEDED`.
+
+#### Docs + examples
+- `docs/x402-quickstart.md` — 4-command path (60s read, 3min to first paid
+  invoke). Cites Coinbase Onramp + CDP for wallet funding.
+- `examples/05-x402-invoke.ts` — runnable end-to-end x402 invoke with all
+  three safety caps configured, full error-class handling.
+- README.md x402 section: condensed from 35 lines of boilerplate to a
+  10-line example using `walletFromEnv()`.
+
+### Build
+- `tsup --external ethers` keeps ethers out of the SDK bundle (was inlining
+  to 1.23 MB; now 14 KB ESM / 71 KB CJS as before).
+
+### Tests
+- `test/x402-safety-caps.test.ts` — 20 cases: cap arithmetic, signer-not-called
+  on rejection, rolling window GC, ledger-only-on-success, gas estimate
+  source preference, `nextAction` synthesis on all 5 wire errors +
+  `InsufficientPaymentOptionsError`.
+- `test/x402-signer-env.test.ts` — 12 cases: env-var validation, malformed
+  key rejection, no key leakage in error messages, default env-var name,
+  ethers-installed happy path (deterministic Hardhat addr + signature).
+- Total suite: 172/172 PASS (was 140) with ethers installed; 168/168 with
+  ethers absent (4 signing tests gracefully skipped via `it.skip` + early
+  return).
+
+### Behavior unchanged
+- Wallet path: zero behavior change.
+- mode='auto' without caps: zero behavior change.
+- mode='x402' without caps: zero behavior change.
+- mode='wallet': always ignores caps (they only apply on the x402 path).
+- Failed settlements (4xx/5xx after X-Payment retry) do NOT advance the
+  hourly ledger — only confirmed 200 OK settlements count.
+
+### Versioning
+- 0.8.0 → 0.8.2 (skipping 0.8.1, which was reserved for the X-Payment-Response
+  spec-canonical-keys wire fix that already landed in audit-A close).
+
 ## [0.8.0] - 2026-05-11
 
 Aligns with `jecp-spec` v1.1.0 (x402 integration). Backward-compatible —

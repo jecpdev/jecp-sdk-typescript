@@ -222,4 +222,53 @@ export interface PaymentConfig {
   signer?: Signer;
   /** Default 30_000ms. Aborts facilitator round-trip if exceeded. */
   facilitatorTimeoutMs?: number;
+
+  // ─── v0.8.2 — H-6 safety caps (Panel 4 §A.3 + Audit B cross-finding) ──
+  //
+  // Agent budget guardrails. The defense-in-depth rationale: a compromised
+  // agent (prompt-injected, exfiltrated API key, runaway loop) that signs
+  // EIP-3009 authorizations can drain the entire Base wallet because the
+  // facilitator settles atomically. SDK-side caps refuse to sign BEFORE the
+  // typed-data hashing step, so a malicious 402 cannot extract a signature
+  // for a too-large amount. Caps are best-effort (an attacker with full
+  // process control can patch them out) — they are the inner-most ring of
+  // defense, paired with mandate.budget_usdc on the Hub side.
+
+  /**
+   * Maximum USDC micros allowed per single `invoke()` call.
+   * 1 USDC = 1_000_000. Example: `1_000_000n` = $1 per call.
+   *
+   * When set, the SDK inspects the 402's x402 `amount` BEFORE signing.
+   * Exceeding the cap throws `X402AmountCapExceededError` with no signature
+   * produced. `undefined` = no enforcement (existing v0.8.0/0.8.1 behavior).
+   */
+  maxPerCallUsdc?: bigint;
+
+  /**
+   * Rolling 1-hour budget cap, in USDC micros, scoped to this `JecpClient`
+   * instance. When set, the SDK maintains an in-memory ledger of accepted
+   * x402 spend; if `cumulative_last_hour + this_invoke > cap`, the SDK
+   * throws `X402HourlyCapExceededError` before signing.
+   *
+   * The window is rolling (not calendar-hour aligned): each accepted spend
+   * is timestamped; entries older than 3600s are dropped at check time.
+   *
+   * `undefined` = no enforcement. Recommended default in production agents:
+   * `maxPerCallUsdc * 10` to allow burst usage while bounding worst-case
+   * drain on full compromise.
+   */
+  maxPerHourUsdc?: bigint;
+
+  /**
+   * Maximum ratio of estimated on-chain gas cost to the x402 invoke amount.
+   * E.g., `0.05` = reject if gas would be >5% of the value being paid.
+   *
+   * Protects against fee-malleability attacks where a hostile facilitator
+   * could ask the agent to settle a low-value invoke under congested
+   * conditions that make gas dominate the spend. The SDK computes
+   * `gasEstimateUsd / amount_usd` from `estimateCost()` heuristics.
+   *
+   * `undefined` = no enforcement.
+   */
+  maxGasRatio?: number;
 }

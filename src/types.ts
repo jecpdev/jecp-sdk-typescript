@@ -76,7 +76,17 @@ export type NextAction =
   | { type: 'see_manifest';          api?: string; hint?: string }
   | { type: 'earn_trust';            hint?: string }
   | { type: 'try_alternative_provider'; api?: string; hint?: string }
-  | { type: 'upgrade_client';        spec?: string; hint?: string };
+  | { type: 'upgrade_client';        spec?: string; hint?: string }
+  // v0.8.2 — H-4.4 x402 error enrichment (audit-D §A.3 P0-3).
+  // These map directly onto SDK-side recovery in `examples/05-x402-invoke.ts`.
+  | { type: 'topup_url';             url: string; hint?: string }
+  | { type: 'check_signer';          hint?: string }
+  | { type: 'resign';                hint?: string }
+  | { type: 'switch_to_wallet';      hint?: string }
+  | { type: 'check_gas';             hint?: string }
+  | { type: 'raise_cap';             hint?: string }
+  | { type: 'review_intent';         hint?: string }
+  | { type: 'link_wallet';           hint?: string };
 
 // ─── Catalog ─────────────────────────────────────────────────
 

@@ -49,6 +49,10 @@ export {
   X402FacilitatorUnreachableError,
   X402SettlementReusedError,
   InsufficientPaymentOptionsError,
+  // v0.8.2 — H-6 SDK safety caps:
+  X402AmountCapExceededError,
+  X402HourlyCapExceededError,
+  X402GasRatioExceededError,
   JecpErrorCode,
 } from './errors.js';
 export type { JecpErrorCodeValue, InputSchemaViolation } from './errors.js';

@@ -33,3 +33,11 @@ export {
   freshNonce,
   packSignature,
 } from './payload.js';
+
+// v0.8.2 — H-4.1 Signer helpers (panel-4 §A.3 / audit-D fix).
+// Lazy-load `ethers` peer dep; not bundled into browser entry.
+export {
+  walletFromEnv,
+  walletFromPrivateKey,
+  type WalletFromEnvOptions,
+} from './signers/index.js';

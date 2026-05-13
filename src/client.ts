@@ -24,7 +24,13 @@ import type {
   TopupRequest,
   TopupResponse,
 } from './types.js';
-import { JecpError, InsufficientPaymentOptionsError } from './errors.js';
+import {
+  JecpError,
+  InsufficientPaymentOptionsError,
+  X402AmountCapExceededError,
+  X402HourlyCapExceededError,
+  X402GasRatioExceededError,
+} from './errors.js';
 import {
   DEFAULT_RETRY,
   delayForAttempt,
@@ -103,6 +109,20 @@ export class JecpClient {
   private readonly paymentMode: PaymentMode;
   private readonly signer?: Signer;
   private readonly facilitatorTimeoutMs: number;
+  /**
+   * v0.8.2 H-6 safety caps. `undefined` for any individual cap = no enforcement
+   * (existing v0.8.0/0.8.1 behavior). See `PaymentConfig` for rationale.
+   */
+  private readonly maxPerCallUsdc?: bigint;
+  private readonly maxPerHourUsdc?: bigint;
+  private readonly maxGasRatio?: number;
+  /**
+   * Rolling-1h ledger of accepted x402 spends, [timestampMs, usdcMicros].
+   * Append-only with lazy GC at check time. Bounded by maxPerHourUsdc's
+   * implied burst rate; for $10/hr at $0.20/call that's ~50 entries max.
+   * @internal
+   */
+  private readonly hourlyLedger: Array<{ at: number; usdc: bigint }> = [];
 
   constructor(opts: JecpClientOptions) {
     if (!opts.agentId) throw new Error('JecpClient: agentId is required');
@@ -119,6 +139,10 @@ export class JecpClient {
     this.paymentMode = payment?.mode ?? 'auto';
     this.signer = payment?.signer;
     this.facilitatorTimeoutMs = payment?.facilitatorTimeoutMs ?? 30_000;
+    // H-6 safety caps — passed through unchanged. `undefined` = no enforcement.
+    this.maxPerCallUsdc = payment?.maxPerCallUsdc;
+    this.maxPerHourUsdc = payment?.maxPerHourUsdc;
+    this.maxGasRatio = payment?.maxGasRatio;
 
     if (this.paymentMode === 'x402' && !this.signer) {
       throw new Error(
@@ -369,6 +393,13 @@ export class JecpClient {
       });
     }
 
+    // ─── H-6 safety caps (Panel 4 §A.3 + Audit B) ──────────────
+    // All checks happen BEFORE signing so a compromised facilitator cannot
+    // extract a signature for a too-large amount. The signer is invoked only
+    // when every cap is satisfied.
+    const requestedUsdc = BigInt(x402Req.amount);
+    this.enforceSafetyCaps(requestedUsdc, x402Req);
+
     const payload = await buildX402Payload(x402Req, this.signer);
     const xPayment = encodeXPaymentHeader(payload);
 
@@ -406,6 +437,12 @@ export class JecpClient {
           amount_usdc: BigInt(x402Req.amount),
         };
       }
+      // H-6: only record against the rolling-hour ledger on actual success.
+      // If the retry returned 4xx/5xx we don't penalize the budget; the next
+      // call's cap check will reflect only real settlements.
+      if (this.maxPerHourUsdc !== undefined) {
+        this.hourlyLedger.push({ at: Date.now(), usdc: BigInt(x402Req.amount) });
+      }
       return result;
     }
 
@@ -419,6 +456,86 @@ export class JecpClient {
   /** USDC micros (1 USDC = 1_000_000) → USD as float. */
   private usdcMicrosToUsd(micros: bigint): number {
     return Number(micros) / 1_000_000;
+  }
+
+  /**
+   * v0.8.2 H-6 safety cap enforcement. Runs before signing in `invokeX402Path`.
+   *
+   * Order is fixed (cheapest → costliest check):
+   *   1. maxPerCallUsdc (constant-time comparison)
+   *   2. maxPerHourUsdc (O(n) GC + sum; n is bounded by burst rate)
+   *   3. maxGasRatio (single arithmetic)
+   *
+   * Throws the corresponding `X402*CapExceededError` and returns nothing on
+   * success. No side effects on the ledger — that happens only after the
+   * settlement returns 200.
+   *
+   * @internal
+   */
+  private enforceSafetyCaps(
+    requestedUsdc: bigint,
+    x402Req: import('./x402/types.js').X402ExactRequirement,
+  ): void {
+    // Per-call cap.
+    if (this.maxPerCallUsdc !== undefined && requestedUsdc > this.maxPerCallUsdc) {
+      throw new X402AmountCapExceededError({
+        code: 'X402_AMOUNT_CAP_EXCEEDED',
+        message: '', // class fills a structured message
+        status: 0,
+        requestedUsdc,
+        capUsdc: this.maxPerCallUsdc,
+      });
+    }
+
+    // Rolling hourly cap.
+    if (this.maxPerHourUsdc !== undefined) {
+      const cutoff = Date.now() - 3_600_000;
+      // GC stale entries in-place (single pass).
+      let writeIdx = 0;
+      for (let readIdx = 0; readIdx < this.hourlyLedger.length; readIdx++) {
+        const entry = this.hourlyLedger[readIdx]!;
+        if (entry.at > cutoff) {
+          this.hourlyLedger[writeIdx++] = entry;
+        }
+      }
+      this.hourlyLedger.length = writeIdx;
+      let cumulative = 0n;
+      for (const entry of this.hourlyLedger) cumulative += entry.usdc;
+      if (cumulative + requestedUsdc > this.maxPerHourUsdc) {
+        throw new X402HourlyCapExceededError({
+          code: 'X402_HOURLY_CAP_EXCEEDED',
+          message: '',
+          status: 0,
+          requestedUsdc,
+          cumulativeUsdc: cumulative,
+          capUsdc: this.maxPerHourUsdc,
+        });
+      }
+    }
+
+    // Gas-ratio cap. Uses estimateCost's 2026 heuristic ($0.004) when the Hub
+    // does not surface a live gas figure. Acceptable for v0.8.2 — if Provider
+    // SDK later threads a live estimate through `x402Req.extra`, this branch
+    // picks it up automatically.
+    if (this.maxGasRatio !== undefined) {
+      const amountUsd = this.usdcMicrosToUsd(requestedUsdc);
+      const extra = x402Req.extra as { gas_estimate_usd?: number } | undefined;
+      const gasUsd = typeof extra?.gas_estimate_usd === 'number'
+        ? extra.gas_estimate_usd
+        : 0.004; // same heuristic as estimateCost()
+      const ratio = amountUsd > 0 ? gasUsd / amountUsd : Infinity;
+      if (ratio > this.maxGasRatio) {
+        throw new X402GasRatioExceededError({
+          code: 'X402_GAS_RATIO_EXCEEDED',
+          message: '',
+          status: 0,
+          gasUsd,
+          amountUsd,
+          observedRatio: ratio,
+          capRatio: this.maxGasRatio,
+        });
+      }
+    }
   }
 
   /** Build an InvokeResult from a low-level raw response. Used by the x402 retry path. */

@@ -61,6 +61,12 @@ export const JecpErrorCode = {
   // SDK-side composite (no wire equivalent)
   INSUFFICIENT_PAYMENT_OPTIONS:'INSUFFICIENT_PAYMENT_OPTIONS',// 402 — neither wallet nor x402 path viable
 
+  // v0.8.2 — H-6 SDK safety caps (Panel 4 §A.3 + Audit B cross-finding).
+  // These are agent-side defense-in-depth — never sent over the wire.
+  X402_AMOUNT_CAP_EXCEEDED: 'X402_AMOUNT_CAP_EXCEEDED',
+  X402_HOURLY_CAP_EXCEEDED: 'X402_HOURLY_CAP_EXCEEDED',
+  X402_GAS_RATIO_EXCEEDED:  'X402_GAS_RATIO_EXCEEDED',
+
   // Internal
   INTERNAL:                'INTERNAL',
 } as const;
@@ -162,16 +168,17 @@ export class JecpError extends Error {
         return new UrlBlockedSsrfError(opts);
 
       // v1.1.0 x402 — locked design §3.5
+      // H-4.4: enrich with default nextAction when Hub didn't supply one.
       case 'X402_PAYMENT_INVALID':
-        return new X402PaymentInvalidError(opts);
+        return new X402PaymentInvalidError(applyDefaultX402NextAction(opts));
       case 'X402_NOT_ACCEPTED':
-        return new X402NotAcceptedError(opts);
+        return new X402NotAcceptedError(applyDefaultX402NextAction(opts));
       case 'X402_SETTLEMENT_TIMEOUT':
-        return new X402SettlementTimeoutError(opts);
+        return new X402SettlementTimeoutError(applyDefaultX402NextAction(opts));
       case 'X402_FACILITATOR_UNREACHABLE':
-        return new X402FacilitatorUnreachableError(opts);
+        return new X402FacilitatorUnreachableError(applyDefaultX402NextAction(opts));
       case 'X402_SETTLEMENT_REUSED':
-        return new X402SettlementReusedError(opts);
+        return new X402SettlementReusedError(applyDefaultX402NextAction(opts));
 
       default:
         return new JecpError(opts);
@@ -541,7 +548,9 @@ export class X402SettlementReusedError extends JecpError {
  * - mode='auto' but neither wallet has balance nor signer is present
  *
  * Carries the original Hub `next_action` (typically `topup`) so callers can
- * present the right recovery UI.
+ * present the right recovery UI. v0.8.2 (H-4.4): when `next_action` is
+ * absent, the constructor synthesizes `{type:'link_wallet'}` for
+ * `signerMissing` or `{type:'switch_to_wallet'}` for `capabilityRejectedX402`.
  *
  * Locked design §6.3 (Developer UX — error classes).
  */
@@ -552,7 +561,27 @@ export class InsufficientPaymentOptionsError extends JecpError {
     /** Set true if mode='x402' and the 402 had no x402 entry. */
     capabilityRejectedX402?: boolean;
   }) {
-    super(opts);
+    // H-4.4: synthesize a sensible default nextAction if Hub didn't send one.
+    const enriched: ConstructorParameters<typeof JecpError>[0] = { ...opts };
+    if (!enriched.nextAction) {
+      if (opts.signerMissing) {
+        enriched.nextAction = {
+          type: 'link_wallet',
+          hint: 'Configure payment.signer (see walletFromEnv) or top up the wallet via JecpClient.topup().',
+        };
+      } else if (opts.capabilityRejectedX402) {
+        enriched.nextAction = {
+          type: 'switch_to_wallet',
+          hint: 'This capability does not accept x402. Switch payment.mode to "wallet" or pick another Provider.',
+        };
+      } else {
+        enriched.nextAction = {
+          type: 'topup',
+          hint: 'Neither x402 nor a wallet balance is available. Top up via JecpClient.topup(20).',
+        };
+      }
+    }
+    super(enriched);
     this.name = 'InsufficientPaymentOptionsError';
     this.signerMissing = opts.signerMissing ?? false;
     this.capabilityRejectedX402 = opts.capabilityRejectedX402 ?? false;
@@ -563,5 +592,194 @@ export class InsufficientPaymentOptionsError extends JecpError {
 
   /** Always false — caller must change configuration or top up first. */
   get retryable(): false { return false; }
+}
+
+// ─── v0.8.2 H-4.4 helper: x402 default nextAction synthesis ───────────────
+//
+// Audit-D §A.3 P0-3 found that 5/5 X402_* error classes had no nextAction
+// when Hubs (incl. the production Hub at v44+) didn't supply one. This
+// helper centralizes the "fallback recovery hint" so the upgrade is purely
+// additive — if a Hub starts emitting next_action, it wins.
+
+/** @internal */
+function applyDefaultX402NextAction(
+  opts: ConstructorParameters<typeof JecpError>[0],
+): ConstructorParameters<typeof JecpError>[0] {
+  if (opts.nextAction) return opts;
+  const subcause = typeof opts.details?.['subcause'] === 'string'
+    ? (opts.details['subcause'] as string)
+    : undefined;
+  let nextAction: NextAction;
+  switch (opts.code) {
+    case 'X402_PAYMENT_INVALID': {
+      // signature_invalid / amount_mismatch / nonce_reused / expired — all
+      // resolved by re-signing a fresh authorization. signature_invalid in
+      // particular often points at chainId / verifyingContract mismatch.
+      nextAction = subcause === 'signature_invalid'
+        ? { type: 'check_signer', hint: 'Verify EIP-712 domain (chainId, verifyingContract) matches the 402 challenge.' }
+        : { type: 'resign', hint: 'Re-build EIP-3009 authorization with a fresh nonce.' };
+      break;
+    }
+    case 'X402_NOT_ACCEPTED':
+      nextAction = { type: 'switch_to_wallet', hint: 'Capability is wallet-only. Use payment.mode = "wallet" or pick another Provider.' };
+      break;
+    case 'X402_SETTLEMENT_TIMEOUT':
+      nextAction = { type: 'retry_after', hint: 'Facilitator slow or chain congested. Retry with a fresh nonce after backoff.' };
+      break;
+    case 'X402_FACILITATOR_UNREACHABLE':
+      nextAction = subcause === 'cert_pin_mismatch' || subcause === 'signature_pin_mismatch'
+        ? { type: 'upgrade_client', hint: 'Trust pin mismatch — do not retry; check for an SDK update or facilitator key rotation.' }
+        : { type: 'retry_after', hint: 'Transport-level transient. Retry the invoke with a fresh nonce.' };
+      break;
+    case 'X402_SETTLEMENT_REUSED':
+      nextAction = { type: 'resign', hint: 'Replay detected (tx_hash or nonce). Re-sign with a fresh 32-byte nonce.' };
+      break;
+    default:
+      return opts;
+  }
+  return { ...opts, nextAction };
+}
+
+// ─── v0.8.2 H-6 SDK safety caps (Panel 4 §A.3 + Audit B cross-finding) ────
+//
+// Three new SDK-only error classes. Thrown BEFORE signing — the EIP-3009
+// signature is never produced, so even a compromised signer cannot leak it.
+// All carry a `nextAction` of either `raise_cap`, `review_intent`, or
+// `check_gas` so caller agents can present a recovery UI rather than just
+// stack-trace.
+
+/**
+ * v0.8.2 X402_AMOUNT_CAP_EXCEEDED — SDK-only (no wire equivalent).
+ *
+ * Thrown by `JecpClient.invoke()` when the 402's x402 `amount` exceeds the
+ * configured `payment.maxPerCallUsdc` cap. The signer is NOT invoked.
+ *
+ * `nextAction.type = 'raise_cap'` — caller may want to bump the cap or
+ * escalate to a human-in-the-loop approval flow.
+ */
+export class X402AmountCapExceededError extends JecpError {
+  constructor(opts: ConstructorParameters<typeof JecpError>[0] & {
+    requestedUsdc: bigint;
+    capUsdc: bigint;
+  }) {
+    const requested = formatUsdcMicros(opts.requestedUsdc);
+    const cap = formatUsdcMicros(opts.capUsdc);
+    super({
+      ...opts,
+      message: opts.message ||
+        `x402 invoke amount $${requested} exceeds payment.maxPerCallUsdc cap $${cap}. ` +
+        `Signature was NOT produced (audit-B / panel-4 §A.3 SDK defense).`,
+      nextAction: opts.nextAction ?? {
+        type: 'raise_cap',
+        hint: `Raise payment.maxPerCallUsdc above ${opts.requestedUsdc.toString()} micros, ` +
+          `or refuse this invoke at the caller layer.`,
+      },
+    });
+    this.name = 'X402AmountCapExceededError';
+    this.requestedUsdc = opts.requestedUsdc;
+    this.capUsdc = opts.capUsdc;
+  }
+
+  /** The 402 challenge's requested USDC micros. */
+  public readonly requestedUsdc: bigint;
+  /** The SDK-configured cap in USDC micros. */
+  public readonly capUsdc: bigint;
+
+  /** Always false — the agent must raise the cap or refuse the call. */
+  get retryable(): false { return false; }
+}
+
+/**
+ * v0.8.2 X402_HOURLY_CAP_EXCEEDED — SDK-only (no wire equivalent).
+ *
+ * Thrown when accepting this invoke would push the rolling 1-hour spend
+ * over `payment.maxPerHourUsdc`. The signer is NOT invoked, and the
+ * pending invoke is NOT recorded against the budget.
+ *
+ * `nextAction.type = 'review_intent'` — typically points at a runaway loop
+ * or prompt-injection scenario rather than an honest mistake.
+ */
+export class X402HourlyCapExceededError extends JecpError {
+  constructor(opts: ConstructorParameters<typeof JecpError>[0] & {
+    requestedUsdc: bigint;
+    cumulativeUsdc: bigint;
+    capUsdc: bigint;
+  }) {
+    const requested = formatUsdcMicros(opts.requestedUsdc);
+    const cumulative = formatUsdcMicros(opts.cumulativeUsdc);
+    const cap = formatUsdcMicros(opts.capUsdc);
+    super({
+      ...opts,
+      message: opts.message ||
+        `x402 invoke would push 1-hour spend to $${formatUsdcMicros(opts.cumulativeUsdc + opts.requestedUsdc)} ` +
+        `(cap $${cap}; already spent $${cumulative} this hour, this call wants $${requested}).`,
+      nextAction: opts.nextAction ?? {
+        type: 'review_intent',
+        hint: 'Pause the agent and inspect call patterns — hourly cap is a runaway-loop guardrail.',
+      },
+    });
+    this.name = 'X402HourlyCapExceededError';
+    this.requestedUsdc = opts.requestedUsdc;
+    this.cumulativeUsdc = opts.cumulativeUsdc;
+    this.capUsdc = opts.capUsdc;
+  }
+
+  public readonly requestedUsdc: bigint;
+  /** Sum of x402 invokes accepted in the last 3600s (rolling window). */
+  public readonly cumulativeUsdc: bigint;
+  public readonly capUsdc: bigint;
+
+  get retryable(): false { return false; }
+}
+
+/**
+ * v0.8.2 X402_GAS_RATIO_EXCEEDED — SDK-only (no wire equivalent).
+ *
+ * Thrown when the estimated on-chain gas cost / invoke amount ratio
+ * exceeds `payment.maxGasRatio` (default unset = no enforcement; typical
+ * production setting: 0.05 = 5%).
+ *
+ * Defense against fee-malleability: a hostile facilitator could lure the
+ * agent to settle low-value invokes during gas spikes, where gas dominates
+ * total spend. The check happens after we know the amount but before
+ * signing.
+ */
+export class X402GasRatioExceededError extends JecpError {
+  constructor(opts: ConstructorParameters<typeof JecpError>[0] & {
+    gasUsd: number;
+    amountUsd: number;
+    observedRatio: number;
+    capRatio: number;
+  }) {
+    super({
+      ...opts,
+      message: opts.message ||
+        `x402 gas/amount ratio ${(opts.observedRatio * 100).toFixed(2)}% ` +
+        `exceeds payment.maxGasRatio cap ${(opts.capRatio * 100).toFixed(2)}% ` +
+        `(gas ~$${opts.gasUsd.toFixed(4)} / amount $${opts.amountUsd.toFixed(4)}).`,
+      nextAction: opts.nextAction ?? {
+        type: 'check_gas',
+        hint: 'Wait for Base gas to cool, or raise payment.maxGasRatio if higher overhead is acceptable.',
+      },
+    });
+    this.name = 'X402GasRatioExceededError';
+    this.gasUsd = opts.gasUsd;
+    this.amountUsd = opts.amountUsd;
+    this.observedRatio = opts.observedRatio;
+    this.capRatio = opts.capRatio;
+  }
+
+  public readonly gasUsd: number;
+  public readonly amountUsd: number;
+  public readonly observedRatio: number;
+  public readonly capRatio: number;
+
+  get retryable(): false { return false; }
+}
+
+/** @internal — format USDC micros as a 4-decimal USD string for messages. */
+function formatUsdcMicros(micros: bigint): string {
+  const usd = Number(micros) / 1_000_000;
+  return usd.toFixed(usd >= 1 ? 2 : 4);
 }
 

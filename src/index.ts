@@ -41,6 +41,10 @@ export {
   X402FacilitatorUnreachableError,
   X402SettlementReusedError,
   InsufficientPaymentOptionsError,
+  // v0.8.2 — H-6 SDK safety caps:
+  X402AmountCapExceededError,
+  X402HourlyCapExceededError,
+  X402GasRatioExceededError,
   JecpErrorCode,
 } from './errors.js';
 export type { JecpErrorCodeValue, InputSchemaViolation } from './errors.js';
@@ -56,6 +60,13 @@ export {
   freshNonce,
   packSignature,
 } from './x402/payload.js';
+
+// v0.8.2 — H-4.1 Signer helpers (Node-only; lazy-loads ethers peer dep).
+export {
+  walletFromEnv,
+  walletFromPrivateKey,
+} from './x402/signers/index.js';
+export type { WalletFromEnvOptions } from './x402/signers/index.js';
 export type {
   PaymentMethod,
   PaymentMode,
