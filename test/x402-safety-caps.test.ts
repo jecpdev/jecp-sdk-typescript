@@ -426,4 +426,38 @@ describe('H-4.4 — default nextAction synthesis on X402_* errors', () => {
     });
     expect(e.nextAction?.type).toBe('switch_to_wallet');
   });
+
+  // ─── Audit A-L3 — typed accessors on X402NotAcceptedError ─────
+  // The Hub now emits `details.accepted` (array) and `details.received`
+  // (string) per spec §3.5. Ensure SDK callers can read them via typed
+  // accessors instead of digging through `details` themselves.
+
+  it('Audit A-L3 — X402NotAcceptedError exposes accepted[] from details', () => {
+    const e = decodeError<X402NotAcceptedError>('X402_NOT_ACCEPTED', {
+      subcause: 'capability_wallet_only',
+      accepted: ['stripe'],
+      received: 'x402',
+    });
+    expect(e.accepted).toEqual(['stripe']);
+    expect(e.received).toBe('x402');
+  });
+
+  it('Audit A-L3 — X402NotAcceptedError accessors return undefined when details absent', () => {
+    const e = decodeError<X402NotAcceptedError>('X402_NOT_ACCEPTED', {
+      subcause: 'capability_wallet_only',
+    });
+    expect(e.accepted).toBeUndefined();
+    expect(e.received).toBeUndefined();
+  });
+
+  it('Audit A-L3 — X402NotAcceptedError ignores malformed accepted (non-array)', () => {
+    const e = decodeError<X402NotAcceptedError>('X402_NOT_ACCEPTED', {
+      subcause: 'capability_wallet_only',
+      accepted: 'stripe',
+      received: 'x402',
+    });
+    // Defensive: ignore non-array shapes rather than expose a typed lie.
+    expect(e.accepted).toBeUndefined();
+    expect(e.received).toBe('x402');
+  });
 });

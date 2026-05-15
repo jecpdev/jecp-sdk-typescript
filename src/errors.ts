@@ -460,6 +460,34 @@ export class X402NotAcceptedError extends JecpError {
     return typeof v === 'string' ? v : undefined;
   }
 
+  /**
+   * The list of payment methods the Hub WILL accept for this capability,
+   * surfaced from `details.accepted` per spec §3.5 (Audit A-L3).
+   *
+   * Typed accessor — saves callers a `details?.accepted as string[] | undefined`
+   * cast and gives them a discoverable surface in IDE autocomplete.
+   *
+   * @example
+   *   if (err.accepted?.includes('stripe')) { /* fall back to wallet *\/ }
+   */
+  get accepted(): string[] | undefined {
+    const v = this.details?.['accepted'];
+    if (Array.isArray(v) && v.every((x) => typeof x === 'string')) {
+      return v as string[];
+    }
+    return undefined;
+  }
+
+  /**
+   * The payment method the agent attempted but the Hub rejected
+   * (e.g. `"x402"` when the capability is wallet-only). From `details.received`.
+   * Audit A-L3.
+   */
+  get received(): string | undefined {
+    const v = this.details?.['received'];
+    return typeof v === 'string' ? v : undefined;
+  }
+
   /** Always false. */
   get retryable(): false { return false; }
 }

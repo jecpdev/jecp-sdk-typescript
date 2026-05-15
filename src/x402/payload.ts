@@ -78,8 +78,22 @@ export function buildEIP3009Params(
 
 /**
  * Concatenate (r, s, v) into the 65-byte hex signature form expected by
- * the x402 facilitator's `payload.signature` field. v is 27 or 28 (or 0/1
- * normalized to 27/28).
+ * the x402 facilitator's `payload.signature` field.
+ *
+ * **`v` normalization**: The x402 spec (JECP §3) and the underlying
+ * EIP-3009 / EIP-712 layer require ECDSA `v` to be `27` or `28`. Some
+ * EIP-2098 / EIP-1559-aware signers (notably ethers v6 raw `_signTypedData`
+ * paths and a handful of hardware-wallet adapters) emit `v` as `0` or `1`
+ * (the un-normalized recovery id). Per **EIP-2** the canonical wire form
+ * adds 27 to the recovery id, yielding `27` or `28`. This function
+ * normalizes `v < 27 ? v + 27 : v` so signers from either family produce a
+ * facilitator-acceptable signature without the caller knowing which
+ * convention their adapter uses.
+ *
+ * References:
+ *   - EIP-2: https://eips.ethereum.org/EIPS/eip-2 (`v` MUST be 27 or 28)
+ *   - JECP spec §3 (06-x402-integration.md): `signature: 0x<130-hex>` payload
+ *   - x402 v1 spec §4 (`payload.signature` is the EIP-712 raw signature)
  */
 export function packSignature(v: number, r: `0x${string}`, s: `0x${string}`): `0x${string}` {
   const normalizedV = v < 27 ? v + 27 : v;
