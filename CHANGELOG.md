@@ -5,6 +5,21 @@ All notable changes to `@jecpdev/sdk` are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.3] - 2026-05-15
+
+audit-A residual sweep — additive, backward-compatible.
+
+Closes audit findings:
+- **A-L3** (LOW): `X402NotAcceptedError` typed accessors `accepted` and
+  `received` reading from `details.{accepted, received}` (which the Hub
+  emits per spec §3.5 since the Critical sweep). DX gap closed.
+- **A-L4** (LOW): `packSignature` JSDoc enriched with EIP-2 + JECP §3 +
+  x402 v1 §4 citations explaining `v < 27 ? v + 27 : v` normalization.
+
+Tests: 175 passed (was 172, +3 new).
+Build: clean (CJS+ESM+DTS).
+No new package.json dependencies.
+
 ## [0.8.2] - 2026-05-13
 
 UX P0 + SDK safety caps. Backward-compatible — all additions are additive.
