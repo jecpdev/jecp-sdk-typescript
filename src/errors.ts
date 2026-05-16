@@ -137,6 +137,11 @@ export class JecpError extends Error {
         return new MandateExpiredError(opts);
       case 'AUTH_REQUIRED':
       case 'INVALID_AGENT':
+      // v0.9.0 — Provider-side auth failure codes (provider-client surface).
+      // Same recovery path as the agent-side auth errors: caller must rotate
+      // or re-fetch the credential.
+      case 'INVALID_API_KEY':
+      case 'INVALID_PROVIDER':
         return new AuthError(opts);
       case 'RATE_LIMITED':
         return new RateLimitError(opts);
@@ -166,6 +171,18 @@ export class JecpError extends Error {
       // v1.1.0 c10 — composite SSRF defense (spec §9.7.1, ADR-0002)
       case 'URL_BLOCKED_SSRF':
         return new UrlBlockedSsrfError(opts);
+
+      // v0.9.0 Provider lifecycle (register / publish / rotate-key)
+      case 'NAMESPACE_TAKEN':
+        return new NamespaceTakenError(opts);
+      case 'UNSUPPORTED_COUNTRY':
+        return new UnsupportedCountryError(opts);
+      case 'ROTATION_24H_CAP':
+        return new RotationCapError(opts);
+      case 'PARSE_ERROR':
+        return new ManifestParseError(opts);
+      case 'VERSION_EXISTS':
+        return new ManifestVersionExistsError(opts);
 
       // v1.1.0 x402 — locked design §3.5
       // H-4.4: enrich with default nextAction when Hub didn't supply one.

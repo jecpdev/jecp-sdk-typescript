@@ -24,16 +24,7 @@
  * Use `verifyDnsPoll()` when you do want a wait-loop.
  */
 
-import {
-  JecpError,
-  NamespaceTakenError,
-  UnsupportedCountryError,
-  RotationCapError,
-  ManifestParseError,
-  ManifestVersionExistsError,
-  UrlBlockedSsrfError,
-  AuthError,
-} from './errors.js';
+import { JecpError } from './errors.js';
 import type {
   ConnectStripeResponse,
   ProviderMe,
@@ -193,10 +184,16 @@ export class JecpProviderClient {
   /**
    * Single attempt against POST /v1/providers/verify-dns.
    *
-   * Returns the parsed `{ verified, status, message }` envelope on both
-   * 2xx and 4xx — a "not yet verified" outcome is not an exception, it's
-   * an expected state during DNS propagation. 5xx still throws (the Hub
-   * is reporting an internal failure that the caller cannot resolve).
+   * Returns the parsed `{ verified, status, message }` envelope on 2xx
+   * and on 4xx that is NOT 401/403 — a "not yet verified" outcome is not
+   * an exception, it's an expected state during DNS propagation.
+   *
+   * The loop halts on the same conditions as `@jecpdev/cli`'s poll loop
+   * (QA P1-5): 401/403 throws `AuthError` (a revoked key should never be
+   * silently polled forever) and 5xx throws `JecpError` (a Hub internal
+   * failure the caller cannot resolve). The CLI exits the process for the
+   * same conditions — the surfaces share the same set of halting reasons,
+   * they just differ in how they signal them (throw vs. exit).
    *
    * Pass `{ once: true }` for parity with the CLI flag; it's the same
    * behavior as omitting options.
@@ -215,7 +212,11 @@ export class JecpProviderClient {
    * a long-tail DNS propagation is a UX problem, not a fatal one, and
    * forcing callers to catch a `TimeoutError` here would be hostile.
    *
-   * 5xx during a poll cycle is fatal (the loop throws), matching the CLI.
+   * Halting conditions (shared with the CLI poll loop — QA P1-5):
+   * - 401 / 403 during any attempt → throws `AuthError`
+   * - 5xx during any attempt       → throws `JecpError`
+   * The CLI exits the process under the same conditions; the two surfaces
+   * stop polling for the same reasons but signal differently.
    *
    * @example
    *   const r = await client.verifyDnsPoll({
@@ -350,9 +351,16 @@ export class JecpProviderClient {
   // ─── internals ────────────────────────────────────────────────────
 
   /**
-   * Single attempt against /v1/providers/verify-dns. 2xx and 4xx both
-   * resolve with the parsed envelope; 5xx throws. The CLI uses identical
-   * semantics so operators see the same behavior here.
+   * Single attempt against /v1/providers/verify-dns.
+   *
+   * Semantics (mirrored in `@jecpdev/cli` — QA P1-5):
+   * - 2xx                         → return envelope
+   * - 4xx (non-401/403)           → return envelope (still propagating)
+   * - 401 / 403                   → throw `AuthError` (caller stops looping)
+   * - 5xx                         → throw `JecpError` (Hub failure)
+   *
+   * The CLI exits the process under the 401/403/5xx conditions. Both
+   * surfaces halt the poll loop for the same reasons.
    */
   private async singleVerifyAttempt(): Promise<VerifyDnsResponse> {
     const url = `${this.baseUrl}/v1/providers/verify-dns`;
@@ -445,44 +453,43 @@ export class JecpProviderClient {
    *   { error: { code, message, details? } }                (JECP v1.0+)
    *
    * Unknown codes fall back to plain `JecpError` with the raw body attached.
+   *
+   * Delegates to {@link JecpError.fromBody} after normalizing the envelope —
+   * keeps a single source of truth for code-to-subclass dispatch (architect
+   * A-1). The legacy `{ error: "string" }` shape is rewritten to a structured
+   * envelope so the canonical factory sees the same input as the v1.0+ path,
+   * and `next_action` (when present at the top level) is preserved.
    */
   private static errorFromBody(body: RawErrorEnvelope, status: number): JecpError {
     const err = body?.error;
-    const code =
-      typeof err === 'object' && err?.code ? err.code : `HTTP_${status}`;
-    const message =
-      typeof err === 'string'
-        ? err
-        : typeof err === 'object' && err?.message
-          ? err.message
-          : `request failed: ${status}`;
-    const details =
-      typeof err === 'object' && err?.details && typeof err.details === 'object'
-        ? (err.details as Record<string, unknown>)
-        : undefined;
-    const opts = { code, message, status, raw: body, ...(details && { details }) };
-
-    switch (code) {
-      case 'NAMESPACE_TAKEN':
-        return new NamespaceTakenError(opts);
-      case 'UNSUPPORTED_COUNTRY':
-        return new UnsupportedCountryError(opts);
-      case 'ROTATION_24H_CAP':
-        return new RotationCapError(opts);
-      case 'PARSE_ERROR':
-        return new ManifestParseError(opts);
-      case 'VERSION_EXISTS':
-        return new ManifestVersionExistsError(opts);
-      case 'URL_BLOCKED_SSRF':
-        return new UrlBlockedSsrfError(opts);
-      case 'AUTH_REQUIRED':
-      case 'INVALID_API_KEY':
-      case 'INVALID_AGENT':
-      case 'INVALID_PROVIDER':
-        return new AuthError(opts);
-      default:
-        return new JecpError(opts);
+    let normalized: Parameters<typeof JecpError.fromBody>[0];
+    if (typeof err === 'string') {
+      // Legacy `{ error: "string" }` — synthesize a structured envelope so
+      // JecpError.fromBody can dispatch normally. The synthetic code carries
+      // the HTTP status (`HTTP_409` etc.) so it remains diagnosable.
+      normalized = {
+        error: { code: `HTTP_${status}`, message: err },
+        next_action: (body as { next_action?: import('./types.js').NextAction }).next_action,
+      };
+    } else if (err && typeof err === 'object') {
+      normalized = {
+        error: {
+          code: err.code ?? `HTTP_${status}`,
+          message: err.message ?? `request failed: ${status}`,
+          details:
+            err.details && typeof err.details === 'object'
+              ? (err.details as Record<string, unknown>)
+              : undefined,
+        },
+        next_action: (body as { next_action?: import('./types.js').NextAction }).next_action,
+      };
+    } else {
+      normalized = {
+        error: { code: `HTTP_${status}`, message: `request failed: ${status}` },
+        next_action: (body as { next_action?: import('./types.js').NextAction }).next_action,
+      };
     }
+    return JecpError.fromBody(normalized, status);
   }
 }
 
