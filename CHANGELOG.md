@@ -5,6 +5,81 @@ All notable changes to `@jecpdev/sdk` are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] - 2026-05-16
+
+Provider lifecycle parity with `@jecpdev/cli`. Backward-compatible — every
+existing surface (`JecpClient`, `JecpProvider`, x402, webhooks, provenance)
+is untouched.
+
+TypeScript apps no longer need to shell out to the CLI to register a
+Provider, verify DNS, publish a manifest, rotate the api key, or onboard
+Stripe Connect — the same flow is available in-process. Closes the
+"ad-hoc interpretation" risk flagged by the Architect agent: the SDK is
+now the canonical TypeScript surface for both Agent and Provider sides.
+
+### Added
+
+#### New class — `JecpProviderClient`
+- `JecpProviderClient.register(request, baseUrl?, fetch?)` — static, no auth.
+  POSTs `/v1/providers/register`. Lowercases `namespace`,
+  uppercases `country`, lowercases `usdc_payout_address`. Returns the
+  one-time `provider_api_key` + `hmac_secret` + `dns_verification_token`.
+- `client.me()` — GET `/v1/providers/me`. Full status (DNS / Stripe / total_calls).
+- `client.verifyDns({ once? })` — single attempt at `/v1/providers/verify-dns`.
+  Returns `{ verified, status, message }` on both 2xx and non-auth 4xx;
+  401/403 throw `AuthError`; 5xx throw `JecpError`.
+- `client.verifyDnsPoll({ intervalMs?, timeoutMs?, onAttempt?, signal? })` —
+  poll loop. Default 10 s interval, 10 min deadline. Returns the last
+  envelope on timeout rather than throwing (a slow DNS is a UX issue,
+  not a fatal one).
+- `client.publishManifest(yamlOrJson, { contentType? })` — POST `/v1/manifests`.
+  Autodetects YAML vs JSON by first non-whitespace character; override via
+  `contentType` for edge cases.
+- `client.rotateKey({ graceSeconds?, revokeOld? })` — POST
+  `/v1/providers/me/rotate-key`. Pre-flight validates graceSeconds in
+  `[60, 604800]` to avoid wasting a Hub rotation slot on a typo.
+- `client.connectStripe()` — POST `/v1/providers/connect-stripe`. Returns
+  the Stripe Connect onboarding URL + Unix expiry.
+
+#### New function — `validateManifest(parsed)`
+- Local manifest validation against the bundled `jecp-spec/v1` schema.
+  Ported 1:1 from `@jecpdev/cli`'s `lib/manifest-validate.ts` so Provider
+  apps can lint a parsed manifest object without round-tripping the Hub.
+- Returns `{ valid, errors }` with `errors` in the same shape as the Hub's
+  `INPUT_SCHEMA_VIOLATION` `details.errors[]` — operators see consistent
+  wording whether they validate locally or hit `/v1/manifests`.
+- Hand-rolled JSON Schema 2020-12 subset; no ajv dependency
+  (keeps the SDK bundle lean).
+
+#### New error classes
+- `NamespaceTakenError` — HTTP 409 `NAMESPACE_TAKEN` (register).
+- `UnsupportedCountryError` — HTTP 400 `UNSUPPORTED_COUNTRY` (register).
+- `RotationCapError` — HTTP 429 `ROTATION_24H_CAP` (rotate-key).
+- `ManifestParseError` — HTTP 400 `PARSE_ERROR` (publish).
+- `ManifestVersionExistsError` — HTTP 409 `VERSION_EXISTS` (publish).
+- `URL_BLOCKED_SSRF` continues to map to the existing `UrlBlockedSsrfError`
+  (audit-A L3 surface, unchanged).
+- All extend `JecpError`; carry `.code`, `.status`, `.message`, `.raw`,
+  `.details` where the Hub supplies them.
+
+#### New wire-shape types
+`ProviderRegisterRequest`, `ProviderRegisterResponse`, `ProviderMe`,
+`VerifyDnsResponse`, `PublishResponse`, `RotateKeyResponse`,
+`ConnectStripeResponse`.
+
+### Notes
+- Tests: 214 passed | 1 skipped (was 171 | 1 skipped). +43 new
+  (24 provider-client, 19 manifest-validate).
+- Build: clean (CJS + ESM + DTS) with `ethers` peer dep installed (the
+  ethers DTS error is the pre-existing v0.8.x behavior for installs that
+  omit the optional peer).
+- No new package.json dependencies.
+- Browser entry (`@jecpdev/sdk/browser`) gets `JecpProviderClient` and
+  `validateManifest` too — both are runtime-portable (fetch + JSON only).
+- `JecpProvider` (the server-side HMAC verifier in `src/provider.ts`) is
+  unchanged and remains the right tool for inbound Hub-to-Provider
+  forwards. `JecpProviderClient` covers the *outbound* admin direction.
+
 ## [0.8.3] - 2026-05-15
 
 audit-A residual sweep — additive, backward-compatible.

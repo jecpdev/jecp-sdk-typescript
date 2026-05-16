@@ -1,0 +1,385 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://jecp.dev/schemas/v1/manifest.schema.json",
+  "title": "JECP Provider Manifest (jecp.yaml)",
+  "description": "Canonical machine-readable schema for the JECP Provider manifest. Mirrors the prose definition in spec/04-manifest.md §5 and the inline schema embedded there. Conformant Hubs MUST validate inbound POST /v1/manifests bodies against this schema (after YAML → JSON conversion) before any other manifest-level acceptance check.",
+  "type": "object",
+  "required": [
+    "namespace",
+    "display_name",
+    "capability",
+    "version",
+    "description",
+    "endpoint",
+    "actions"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "namespace": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{2,31}$",
+      "description": "Lowercase identifier owned by one Provider. 3-32 chars, [a-z][a-z0-9-]. Globally unique across the Hub."
+    },
+    "display_name": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 100,
+      "description": "Human-readable Provider name displayed in the catalog. 2-100 chars."
+    },
+    "website": {
+      "type": "string",
+      "format": "uri",
+      "description": "Provider's marketing or product page. Hubs MAY surface this on the public catalog."
+    },
+    "support_email": {
+      "type": "string",
+      "format": "email",
+      "description": "Operator contact for support escalations. Hubs MAY forward delivery failure notifications here."
+    },
+    "documentation": {
+      "type": "string",
+      "format": "uri",
+      "description": "Optional pointer to capability-specific documentation."
+    },
+    "logo_url": {
+      "type": "string",
+      "format": "uri",
+      "description": "Optional Provider logo URL. Recommended ≥ 256×256 PNG or SVG."
+    },
+    "capability": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{2,63}$",
+      "description": "Capability identifier within the namespace. 3-64 chars, [a-z][a-z0-9-]. Combined with namespace forms the full_id (namespace/capability)."
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$",
+      "description": "Semver MAJOR.MINOR.PATCH. Bump on every published change. Hubs reject duplicate (full_id, version) pairs."
+    },
+    "description": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500,
+      "description": "One-paragraph description of what this capability does. ≤ 500 chars."
+    },
+    "tags": {
+      "type": "array",
+      "maxItems": 8,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 32
+      },
+      "description": "Free-form tags surfaced in the catalog search. Max 8 tags, each ≤ 32 chars."
+    },
+    "endpoint": {
+      "type": "string",
+      "format": "uri",
+      "pattern": "^https://",
+      "description": "HTTPS URL where the Hub forwards inbound invocations. MUST be https:// and pass the Hub's SSRF preflight (see spec §9.7.1)."
+    },
+    "streaming": {
+      "type": "boolean",
+      "default": false,
+      "description": "Capability-level streaming flag. Provided for backward compatibility; the authoritative per-action streaming is on actions[].streaming."
+    },
+    "authentication": {
+      "$ref": "#/$defs/Authentication",
+      "description": "How the Provider authenticates Hub-forwarded calls."
+    },
+    "actions": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/Action" },
+      "description": "One or more actions this capability exposes. At least one is required."
+    },
+    "compliance": { "$ref": "#/$defs/Compliance" },
+    "billing":    { "$ref": "#/$defs/Billing" },
+    "deprecation": { "$ref": "#/$defs/Deprecation" },
+    "metadata": {
+      "type": "object",
+      "description": "Free-form Provider metadata. The Hub treats this opaquely and exposes it on the catalog."
+    },
+    "extensions": {
+      "type": "object",
+      "description": "Vendor-specific extension namespace. Future-compatible fields (e.g. x402 payout addresses pre-v1.1) live here until promoted to first-class schema fields."
+    }
+  },
+  "$defs": {
+    "Action": {
+      "type": "object",
+      "required": [
+        "id",
+        "description",
+        "pricing",
+        "input_schema",
+        "output_schema"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{2,63}$",
+          "description": "Action identifier within the capability. 3-64 chars, [a-z][a-z0-9-]. Unique per capability."
+        },
+        "name": {
+          "type": "string",
+          "maxLength": 100,
+          "description": "Human-readable action label for the catalog. ≤ 100 chars."
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300,
+          "description": "What this action does, in one paragraph. ≤ 300 chars."
+        },
+        "streaming": {
+          "type": "boolean",
+          "default": false,
+          "description": "When true, the Hub serves SSE on /v1/invoke. The Provider MUST respond with Content-Type: text/event-stream and the framing defined in spec §4.3."
+        },
+        "pricing":             { "$ref": "#/$defs/Pricing" },
+        "trust_tier_required": {
+          "enum": ["bronze", "silver", "gold", "platinum"],
+          "default": "bronze",
+          "description": "Minimum trust tier an Agent must have to invoke. Hubs map tiers to verification posture (bronze = email, platinum = KYB)."
+        },
+        "rate_limit_rpm": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Provider-side rate limit hint in requests-per-minute. 0 means use the Hub's default."
+        },
+        "input_schema": {
+          "type": "object",
+          "description": "JSON Schema 2020-12 fragment validated by the Hub against the inbound input. Hubs return INPUT_SCHEMA_VIOLATION on failure with details.errors[]."
+        },
+        "output_schema": {
+          "type": "object",
+          "description": "JSON Schema 2020-12 fragment describing the action's return shape. Currently advisory — the Hub does not enforce it on Provider responses."
+        },
+        "examples": {
+          "type": "array",
+          "items": { "type": "object" },
+          "description": "At least one canonical input/output pair. Surfaced in the catalog."
+        },
+        "side_effects": { "$ref": "#/$defs/SideEffects" },
+        "sla":          { "$ref": "#/$defs/Sla" },
+        "composes":     { "$ref": "#/$defs/Composes" }
+      },
+      "allOf": [
+        {
+          "not": { "required": ["composes", "streaming"] },
+          "description": "Composite actions cannot themselves be streaming — the Hub fan-in semantics are non-streaming. Mark each composed leg streaming individually if needed."
+        }
+      ]
+    },
+
+    "Composes": {
+      "type": "object",
+      "description": "Server-side workflow (M3 / future). The Hub orchestrates the listed steps, substitutes outputs into later inputs, and bills the Agent once for the composite's pricing.base. Currently a v1.1 preview feature.",
+      "required": ["steps"],
+      "additionalProperties": false,
+      "properties": {
+        "max_depth": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1,
+          "default": 1,
+          "description": "Maximum nesting depth. v1.0 supports only 1 (no compose-of-composites)."
+        },
+        "on_step_failure": {
+          "enum": ["rollback", "continue"],
+          "default": "rollback",
+          "description": "Failure policy for non-final steps."
+        },
+        "timeout_total_ms": {
+          "type": "integer",
+          "minimum": 1000,
+          "maximum": 300000,
+          "default": 60000,
+          "description": "Wall-clock cap for the entire composite. The Hub enforces a hard ceiling of 300s."
+        },
+        "steps": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "items": { "$ref": "#/$defs/CompositeStep" }
+        }
+      }
+    },
+
+    "CompositeStep": {
+      "type": "object",
+      "required": ["id", "call", "action", "input"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{0,30}$",
+          "description": "Local step id referenced by later steps via ${steps.<id>.output.<jsonpointer>}."
+        },
+        "call": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]*/[a-z][a-z0-9-]*$",
+          "description": "Target capability full_id (namespace/capability)."
+        },
+        "action": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]*$",
+          "description": "Action id within the target capability."
+        },
+        "input": {
+          "type": "object",
+          "description": "Input object. MAY reference prior steps' outputs via ${steps.<id>.output.<jsonpointer>} string templates."
+        }
+      }
+    },
+
+    "Pricing": {
+      "type": "object",
+      "required": ["base", "currency", "model"],
+      "additionalProperties": false,
+      "properties": {
+        "base": {
+          "type": "string",
+          "pattern": "^\\$\\d+(\\.\\d+)?$",
+          "description": "Flat or up-front charge in USD literal form, e.g. \"$0.005\". The Hub uses this for pre-flight budget checks. Always quoted as USD even when currency is a non-USD code — currency conversion happens at settlement."
+        },
+        "currency": {
+          "type": "string",
+          "pattern": "^([A-Z]{3,5}|both)$",
+          "description": "ISO 4217 alpha-3 fiat code (USD, JPY, EUR, GBP, CAD, AUD, CHF, KRW, SGD, HKD, ...) or crypto extension code (USDC, USDT, BTC, ETH, MATIC). The literal 'both' is retained for backward compatibility with v1.0-draft Providers (= USD+USDC). New Providers SHOULD pick a single concrete currency. MUST be a currency the Hub's payment processor supports for the Provider's registered country."
+        },
+        "model": {
+          "enum": ["flat", "per_call", "per_token", "per_chunk", "per_second", "tiered"],
+          "description": "Pricing model. flat/per_call charge base regardless of usage. per_token uses input_per_token_usdc + output_per_token_usdc. per_chunk uses per_chunk_usdc. per_second uses audio_per_second_usdc. tiered is reserved for future v1.x."
+        },
+        "input_per_token_usdc": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Required when model = per_token. USDC charge per input token."
+        },
+        "output_per_token_usdc": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Required when model = per_token. USDC charge per output token."
+        },
+        "per_chunk_usdc": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Required when model = per_chunk."
+        },
+        "audio_per_second_usdc": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Required when model = per_second."
+        }
+      }
+    },
+
+    "Authentication": {
+      "type": "object",
+      "required": ["type"],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "enum": ["api_key", "mtls", "oauth2"],
+          "description": "Auth scheme the Provider expects on inbound Hub-forwarded calls. v1.0 reference Hub implements only api_key (HMAC-signed header)."
+        },
+        "header_name": {
+          "type": "string",
+          "description": "When type = api_key, the header name carrying the HMAC signature. Default x-jecp-signature."
+        }
+      }
+    },
+
+    "SideEffects": {
+      "type": "object",
+      "description": "Hint for Agents and Hubs about what running this action does outside JECP's bookkeeping. Used by trust-tier policies and by Agents that want to reject calls with surprising side effects.",
+      "additionalProperties": false,
+      "properties": {
+        "external_api_call": { "type": "boolean" },
+        "stores_data":       { "type": "boolean" },
+        "modifies_state":    { "type": "boolean" },
+        "sends_email":       { "type": "boolean" }
+      }
+    },
+
+    "Sla": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "latency_p95_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Provider's claimed P95 latency in ms. Surfaced in the catalog. Hubs MAY use this for capability ranking."
+        },
+        "timeout_ms": {
+          "type": "integer",
+          "minimum": 1000,
+          "maximum": 300000,
+          "default": 30000,
+          "description": "Hub-side hard timeout. Beyond this the Hub returns PROVIDER_UNREACHABLE. 1s minimum, 300s ceiling."
+        }
+      }
+    },
+
+    "Compliance": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "pii_handling": {
+          "enum": ["process_only_no_store", "store_with_consent"],
+          "description": "How the Provider treats PII in inputs. process_only_no_store is the default expectation; store_with_consent requires consent_signal in the Agent's mandate."
+        },
+        "gdpr_compliant": {
+          "type": "boolean",
+          "description": "Provider self-attests GDPR compliance. Hubs MAY require this for traffic from EU Agents."
+        },
+        "data_residency": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 2, "maxLength": 8 },
+          "description": "Regions where Provider data is processed/stored, e.g. [\"EU\", \"US\", \"JP\"]."
+        }
+      }
+    },
+
+    "Billing": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "payout_currency": {
+          "type": "string",
+          "pattern": "^([A-Z]{3,5}|both)$",
+          "description": "Currency in which the Provider receives settlement. ISO 4217 fiat (USD, JPY, EUR, GBP, ...) or crypto extension (USDC, USDT, BTC, ETH, MATIC). 'both' is retained for backward compatibility. MUST be supported by the Provider's registered Stripe Connect country (for fiat) or the Hub's on-chain rail (for crypto)."
+        },
+        "stripe_connect_required": {
+          "type": "boolean",
+          "description": "Whether the Provider must complete Stripe Connect onboarding before manifests can promote to 'active'. The Hub auto-enforces this — Providers without a verified Connect account stay at status='submitted'."
+        }
+      }
+    },
+
+    "Deprecation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "enum": ["active", "deprecated", "sunset"],
+          "default": "active",
+          "description": "Lifecycle state. active = invocable. deprecated = invocable + Hub sends Deprecation/Sunset response headers. sunset = past sunset_at, Hub returns CAPABILITY_DEPRECATED (410)."
+        },
+        "sunset_at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "RFC 3339 timestamp at which status auto-transitions to sunset. Required when status != active."
+        },
+        "successor_version": {
+          "type": "string",
+          "pattern": "^\\d+\\.\\d+\\.\\d+$",
+          "description": "Semver of the replacement version. Surfaced as details.successor in CAPABILITY_DEPRECATED responses."
+        }
+      }
+    }
+  }
+}

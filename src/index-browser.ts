@@ -24,6 +24,19 @@ export type {
   JecpProviderOptions,
 } from './provider-browser.js';
 
+// ─── v0.9.0 Provider lifecycle (outbound admin — fetch-only, runtime-portable) ──
+export { JecpProviderClient } from './provider-client.js';
+export type {
+  JecpProviderClientOptions,
+  VerifyDnsOptions,
+  VerifyDnsPollOptions,
+  PublishManifestOptions,
+  RotateKeyOptions,
+} from './provider-client.js';
+
+export { validateManifest } from './lib/manifest-validate.js';
+export type { ValidationError, ValidationResult } from './lib/manifest-validate.js';
+
 export {
   JecpError,
   InsufficientBalanceError,
@@ -53,6 +66,12 @@ export {
   X402AmountCapExceededError,
   X402HourlyCapExceededError,
   X402GasRatioExceededError,
+  // v0.9.0 Provider lifecycle errors:
+  NamespaceTakenError,
+  UnsupportedCountryError,
+  RotationCapError,
+  ManifestParseError,
+  ManifestVersionExistsError,
   JecpErrorCode,
 } from './errors.js';
 export type { JecpErrorCodeValue, InputSchemaViolation } from './errors.js';
@@ -119,4 +138,12 @@ export type {
   ProviderRef,
   TopupRequest,
   TopupResponse,
+  // v0.9.0 Provider lifecycle wire shapes:
+  ProviderRegisterRequest,
+  ProviderRegisterResponse,
+  ProviderMe,
+  VerifyDnsResponse,
+  PublishResponse,
+  RotateKeyResponse,
+  ConnectStripeResponse,
 } from './types.js';

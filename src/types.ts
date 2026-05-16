@@ -219,3 +219,147 @@ export interface InvokeOptions {
   /** Override the client's default timeout for this call only. */
   timeoutMs?: number;
 }
+
+// ─── v0.9.0 Provider lifecycle (JecpProviderClient) ──────────
+//
+// Wire shapes for POST /v1/providers/register, GET /v1/providers/me,
+// POST /v1/providers/verify-dns, POST /v1/manifests, POST
+// /v1/providers/me/rotate-key, POST /v1/providers/connect-stripe.
+// Naming and field set MUST stay in lock-step with the Hub handler
+// (jecp-hub/setsuna-jobdonebot) and the canonical CLI implementation.
+
+/**
+ * Provider registration request body. Mirrors
+ * POST /v1/providers/register in the Hub.
+ *
+ * `namespace` is the globally-unique identifier owned by this Provider
+ * after registration. It must match `^[a-z][a-z0-9-]{2,31}$` (3-32 chars,
+ * lowercase + digits + hyphens, starts with a letter).
+ *
+ * `country` is an ISO 3166-1 alpha-2 code; the Hub uppercases it before
+ * forwarding to Stripe Connect, but the SDK helper does the uppercase too
+ * so a `Bad Request` doesn't surface for trivial casing mistakes.
+ */
+export interface ProviderRegisterRequest {
+  namespace: string;
+  display_name: string;
+  owner_email: string;
+  endpoint_url: string;
+  /** ISO 3166-1 alpha-2 country code. SDK uppercases. */
+  country: string;
+  /** Optional marketing/product page. */
+  website?: string;
+  /**
+   * Optional Base USDC payout address (0x + 40 hex). SDK lowercases.
+   * Required only if the Provider opts into x402 settlement.
+   */
+  usdc_payout_address?: string;
+}
+
+/**
+ * Response from POST /v1/providers/register.
+ *
+ * `provider_api_key` and `hmac_secret` are shown only ONCE — persist them
+ * immediately. The api_key authenticates subsequent Provider admin calls
+ * (verify-dns, publish, rotate-key, etc.); the hmac_secret signs inbound
+ * Hub→Provider forwards.
+ *
+ * `dns_verification_token` is the value to place in a TXT record at
+ * `_jecp.<endpoint_url host>` to prove ownership of the endpoint domain.
+ */
+export interface ProviderRegisterResponse {
+  provider_id: string;
+  namespace: string;
+  provider_api_key: string;
+  hmac_secret: string;
+  dns_verification_token: string;
+  /** Hub-supplied hints (DNS record name/value, next-step commands). */
+  next_steps: Record<string, unknown>;
+}
+
+/**
+ * Response from GET /v1/providers/me — full status of the calling Provider.
+ *
+ * `status` is the Hub-wide gating signal: typically `submitted` after
+ * register, `verified` after DNS + Stripe both pass. Treat any value other
+ * than `verified` as "manifests will be `submitted` not `active`".
+ */
+export interface ProviderMe {
+  provider_id: string;
+  namespace: string;
+  display_name: string;
+  status: string;
+  dns_verified: boolean;
+  stripe_verified: boolean;
+  endpoint_url?: string;
+  total_calls: number;
+}
+
+/**
+ * Response from POST /v1/providers/verify-dns.
+ *
+ * `verified=true` indicates the Hub's resolver confirmed the
+ * `_jecp.<host>` TXT record matches the registration token. On failure,
+ * `status` carries the Hub's short code (e.g. `pending`, `txt_missing`,
+ * `txt_mismatch`) and `message` carries the human-readable detail.
+ */
+export interface VerifyDnsResponse {
+  verified: boolean;
+  status: string;
+  message: string;
+}
+
+/**
+ * Response from POST /v1/manifests (publish).
+ *
+ * `status` is `active` when the manifest is fully verified and live in the
+ * catalog, otherwise `submitted` (waiting on DNS or Stripe verification).
+ * `validation_warnings` are non-fatal lint findings emitted by the Hub —
+ * the publish succeeded.
+ */
+export interface PublishResponse {
+  capability_id: string;
+  full_id: string;
+  version: string;
+  status: string;
+  action_count: number;
+  validation_warnings: string[];
+}
+
+/**
+ * Response from POST /v1/providers/me/rotate-key.
+ *
+ * `api_key` is the new key, shown only once — the SDK does NOT persist it
+ * anywhere. Callers MUST write it to their secret store immediately.
+ *
+ * `previous_key_valid_until` is the RFC 3339 timestamp at which the old
+ * key stops being accepted; `null` indicates the old key was revoked
+ * immediately (`revoke_old=true`).
+ *
+ * `rotations_in_last_24h` is informational — the Hub returns
+ * `ROTATION_24H_CAP` (HTTP 429 → `RotationCapError`) when the cap is hit.
+ */
+export interface RotateKeyResponse {
+  jecp: '1.0';
+  provider_id: string;
+  namespace: string;
+  api_key: string;
+  api_key_prefix: string;
+  previous_key_valid_until: string | null;
+  grace_seconds: number;
+  revoke_old: boolean;
+  rotations_in_last_24h: number;
+  warning: string;
+}
+
+/**
+ * Response from POST /v1/providers/connect-stripe.
+ *
+ * Open `onboarding_url` in a browser to complete Stripe Connect Express
+ * onboarding (verify identity, accept ToS, link a payout bank). `expires_at`
+ * is a Unix timestamp; Stripe typically scopes Account Links to ~5 minutes.
+ */
+export interface ConnectStripeResponse {
+  onboarding_url: string;
+  expires_at: number;
+}

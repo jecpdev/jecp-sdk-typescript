@@ -205,6 +205,44 @@ Bun.serve({ port: 3000, fetch: handler });
 
 ---
 
+## Provider lifecycle (v0.9.0)
+
+Run the full Provider onboarding flow in-process — no CLI shell-out. Same
+endpoints `@jecpdev/cli` calls; same error mapping (`NamespaceTakenError`,
+`RotationCapError`, `ManifestVersionExistsError`, etc.).
+
+```typescript
+import { JecpProviderClient, validateManifest } from '@jecpdev/sdk';
+import yaml from 'js-yaml';
+import { readFileSync } from 'node:fs';
+
+// 1. Register (shown only once — persist immediately)
+const creds = await JecpProviderClient.register({
+  namespace: 'example', display_name: 'Example Co',
+  owner_email: 'ops@example.com',
+  endpoint_url: 'https://example.com/jecp', country: 'JP',
+});
+// Save creds.provider_api_key + creds.hmac_secret to your secret store.
+
+// 2. Verify DNS (polls every 10 s, up to 10 min by default)
+const client = new JecpProviderClient({ providerApiKey: creds.provider_api_key });
+const dns = await client.verifyDnsPoll({ onAttempt: (n, s) => console.log(n, s) });
+if (!dns.verified) throw new Error(`DNS still propagating: ${dns.message}`);
+
+// 3. Validate locally, then publish
+const parsed = yaml.load(readFileSync('jecp.yaml', 'utf-8'));
+const { valid, errors } = validateManifest(parsed);
+if (!valid) { for (const e of errors) console.error(e.instance_path, e.reason); process.exit(1); }
+await client.publishManifest(readFileSync('jecp.yaml', 'utf-8'));
+```
+
+For Stripe Connect onboarding: `await client.connectStripe()` — open the
+returned `onboarding_url` in a browser. To rotate the api key:
+`await client.rotateKey({ revokeOld: true })` — the new `api_key` is in
+the response and shown only once.
+
+---
+
 ## Error handling with `next_action`
 
 Every JECP error includes a machine-readable `next_action` so agents can recover automatically:

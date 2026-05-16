@@ -811,3 +811,85 @@ function formatUsdcMicros(micros: bigint): string {
   return usd.toFixed(usd >= 1 ? 2 : 4);
 }
 
+// ─── v0.9.0 Provider lifecycle errors (JecpProviderClient) ───────────────
+//
+// Five new typed errors mirroring the Hub error codes documented in
+// jecp-spec §3 + the Provider register/publish/rotate-key handlers. Same
+// constructor shape as JecpError so callers can pattern-match on `.code` or
+// `instanceof` interchangeably.
+
+/**
+ * v0.9.0 — HTTP 409: a Provider already owns the requested namespace.
+ *
+ * Pick a different namespace and re-run `JecpProviderClient.register()`.
+ * Namespace transfer is currently a manual operator process (contact
+ * support@jecp.dev).
+ */
+export class NamespaceTakenError extends JecpError {
+  constructor(opts: ConstructorParameters<typeof JecpError>[0]) {
+    super(opts);
+    this.name = 'NamespaceTakenError';
+  }
+}
+
+/**
+ * v0.9.0 — HTTP 400: the country code supplied at register time is not
+ * supported by Stripe Connect Express. The Hub keys off the ISO 3166-1
+ * alpha-2 list Stripe publishes at https://stripe.com/global.
+ *
+ * Surface this to the operator with a link rather than retrying — list
+ * membership is decided upstream of JECP.
+ */
+export class UnsupportedCountryError extends JecpError {
+  constructor(opts: ConstructorParameters<typeof JecpError>[0]) {
+    super(opts);
+    this.name = 'UnsupportedCountryError';
+  }
+}
+
+/**
+ * v0.9.0 — HTTP 429: the Hub's 24-hour rotation cap kicked in.
+ *
+ * The cap defends against an attacker who phished one key and tries to
+ * permanently rotate it out of reach by spamming `rotate-key`. If this fires
+ * unexpectedly, audit recent activity in the Hub's `provider_audit_log`.
+ *
+ * The Hub typically allows up to 5 rotations per 24h window; see
+ * the Provider register/me/rotate-key handler in setsuna-jobdonebot.
+ */
+export class RotationCapError extends JecpError {
+  constructor(opts: ConstructorParameters<typeof JecpError>[0]) {
+    super(opts);
+    this.name = 'RotationCapError';
+  }
+}
+
+/**
+ * v0.9.0 — HTTP 400 PARSE_ERROR from POST /v1/manifests.
+ *
+ * YAML or JSON manifest could not be parsed. Common causes: invalid
+ * indentation, unquoted strings that look like booleans / numbers,
+ * stray Windows line endings. The Hub's message echoes the parser's
+ * line/column when available.
+ */
+export class ManifestParseError extends JecpError {
+  constructor(opts: ConstructorParameters<typeof JecpError>[0]) {
+    super(opts);
+    this.name = 'ManifestParseError';
+  }
+}
+
+/**
+ * v0.9.0 — HTTP 409 VERSION_EXISTS from POST /v1/manifests.
+ *
+ * The Provider already has a published manifest with this exact
+ * `version`. Manifests are immutable post-publish: bump the manifest's
+ * `version:` field (semver) and re-publish.
+ */
+export class ManifestVersionExistsError extends JecpError {
+  constructor(opts: ConstructorParameters<typeof JecpError>[0]) {
+    super(opts);
+    this.name = 'ManifestVersionExistsError';
+  }
+}
+
